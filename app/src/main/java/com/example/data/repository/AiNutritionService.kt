@@ -937,7 +937,7 @@ class AiNutritionService {
         }
     }
 
-    private fun scaleBitmapForAi(bitmap: Bitmap, maxDimension: Int = 512): Bitmap {
+    private fun scaleBitmapForAi(bitmap: Bitmap, maxDimension: Int = 384): Bitmap {
         // Guarantee software ARGB_8888 bitmap so hardware bitmap encoding never fails
         val isHardware = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O &&
                 bitmap.config == Bitmap.Config.HARDWARE
@@ -959,16 +959,16 @@ class AiNutritionService {
 
     suspend fun analyzeFoodImage(bitmap: Bitmap, mealHint: String? = null): Result<AiMealAnalysisResult> {
         val startTime = System.currentTimeMillis()
-        val scaled = scaleBitmapForAi(bitmap, 512)
+        val scaled = scaleBitmapForAi(bitmap, 384)
         Log.d(TAG, "[Gemini Vision] 📸 Mottog bild: dimensioner=${bitmap.width}x${bitmap.height}, nedskalad=${scaled.width}x${scaled.height}")
 
         if (isFirebaseReady()) {
             try {
                 return withTimeout(60_000L) {
                     val basePromptText = if (!mealHint.isNullOrBlank()) {
-                        "Analysera måltiden på bilden (ledtråd: $mealHint). Identifiera alla synliga livsmedel, såser, dressingar och tillbehör med vikt i gram (weight_g), kalorier (calories), protein_g, carbs_g, fat_g samt preparation_notes på svenska. Svara ENDAST med giltig JSON."
+                        "Analysera måltid (ledtråd: $mealHint). Identifiera livsmedel med weight_g, kalorier, protein_g, carbs_g, fat_g, preparation_notes på svenska. Svara ENDAST med giltig JSON."
                     } else {
-                        "Analysera måltiden på bilden. Identifiera alla synliga livsmedel, såser, dressingar och tillbehör separat med realistiska vikter i gram (weight_g), kalorier (calories), protein_g, carbs_g, fat_g samt preparation_notes på svenska. Om ingen mat syns på bilden, returnera items: [] och dish_name: 'Ingen mat identifierades'. Svara ENDAST med giltig JSON."
+                        "Analysera måltid. Identifiera livsmedel med weight_g, kalorier, protein_g, carbs_g, fat_g, preparation_notes på svenska. Om ej mat, items: []. Svara ENDAST med giltig JSON."
                     }
                     val learnedRulesBlock = AiFoodCorrection.formatRulesForPrompt(learnedCorrections)
                     val promptText = if (learnedRulesBlock.isNotBlank()) {
