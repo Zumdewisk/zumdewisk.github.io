@@ -8,6 +8,7 @@ import com.google.android.gms.ads.AdRequest
 import com.google.android.gms.ads.FullScreenContentCallback
 import com.google.android.gms.ads.LoadAdError
 import com.google.android.gms.ads.MobileAds
+import com.google.android.gms.ads.RequestConfiguration
 import com.google.android.gms.ads.interstitial.InterstitialAd
 import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback
 import com.google.android.ump.ConsentRequestParameters
@@ -17,8 +18,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 object AdManager {
     private const val TAG = "AdManager"
 
-    // Googles TEST-ID för Interstitial. Byt mot ditt eget i release.
-    private const val INTERSTITIAL_ID = "ca-app-pub-3940256099942544/1033173712"
+    // Riktigt AdMob Interstitial Ad Unit ID
+    private const val INTERSTITIAL_ID = "ca-app-pub-6390888557865245/5142058064"
 
     private var interstitialAd: InterstitialAd? = null
     private val adsInitialized = AtomicBoolean(false)
@@ -54,6 +55,13 @@ object AdManager {
 
     private fun initAds(context: Context) {
         if (adsInitialized.getAndSet(true)) return
+
+        // Konfigurera testenheter för att skydda AdMob-kontot under utveckling
+        val requestConfiguration = RequestConfiguration.Builder()
+            .setTestDeviceIds(listOf(AdRequest.DEVICE_ID_EMULATOR))
+            .build()
+        MobileAds.setRequestConfiguration(requestConfiguration)
+
         MobileAds.initialize(context) {
             Log.d(TAG, "MobileAds SDK initialized.")
             loadInterstitial(context)
