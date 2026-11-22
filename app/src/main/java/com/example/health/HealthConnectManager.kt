@@ -11,6 +11,7 @@ import androidx.health.connect.client.PermissionController
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.ActiveCaloriesBurnedRecord
 import androidx.health.connect.client.records.ExerciseSessionRecord
+import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.request.AggregateRequest
@@ -49,6 +50,8 @@ data class HealthConnectDailyData(
     val steps: Long = 0L,
     val activeCaloriesBurned: Int = 0,
     val workouts: List<HealthConnectWorkoutSummary> = emptyList(),
+    val sleepMinutes: Int = 0,
+    val sleepQualityNote: String = "",
     val isSynced: Boolean = false,
     val errorMessage: String? = null
 )
@@ -71,7 +74,8 @@ class HealthConnectManager(private val context: Context) {
     val readPermissions: Set<String> = setOf(
         HealthPermission.getReadPermission(StepsRecord::class),
         HealthPermission.getReadPermission(ActiveCaloriesBurnedRecord::class),
-        HealthPermission.getReadPermission(ExerciseSessionRecord::class)
+        HealthPermission.getReadPermission(ExerciseSessionRecord::class),
+        HealthPermission.getReadPermission(SleepSessionRecord::class)
     )
 
     val allPermissions: Set<String> = readPermissions + setOf(
@@ -182,8 +186,10 @@ class HealthConnectManager(private val context: Context) {
                 granted.contains(HealthPermission.getReadPermission(ActiveCaloriesBurnedRecord::class))
             val canReadExercise =
                 granted.contains(HealthPermission.getReadPermission(ExerciseSessionRecord::class))
+            val canReadSleep =
+                granted.contains(HealthPermission.getReadPermission(SleepSessionRecord::class))
 
-            if (!canReadSteps && !canReadActiveCals && !canReadExercise) {
+            if (!canReadSteps && !canReadActiveCals && !canReadExercise && !canReadSleep) {
                 return HealthConnectDailyData(
                     date = dateStr,
                     isSynced = false,
@@ -270,11 +276,39 @@ class HealthConnectManager(private val context: Context) {
                 emptyList()
             }
 
+            var sleepMinutesTotal = 0
+            var sleepNote = ""
+            if (canReadSleep) {
+                try {
+                    val sleepRecords = client.readRecords(
+                        ReadRecordsRequest(
+                            recordType = SleepSessionRecord::class,
+                            timeRangeFilter = timeRange
+                        )
+                    ).records
+
+                    sleepMinutesTotal = sleepRecords.sumOf { session ->
+                        Duration.between(session.startTime, session.endTime).toMinutes().toInt()
+                    }.coerceAtLeast(0)
+
+                    sleepNote = when {
+                        sleepMinutesTotal >= 480 -> "God sömn (>8h)"
+                        sleepMinutesTotal >= 360 -> "Tillräcklig sömn (6-8h)"
+                        sleepMinutesTotal > 0 -> "Kort sömn (<6h) - aktiv vila rekommenderas"
+                        else -> "Ingen sömn registrerad"
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to read sleep session records", e)
+                }
+            }
+
             HealthConnectDailyData(
                 date = dateStr,
                 steps = stepsTotal,
                 activeCaloriesBurned = activeKcalTotal,
                 workouts = sessions,
+                sleepMinutes = sleepMinutesTotal,
+                sleepQualityNote = sleepNote,
                 isSynced = true,
                 errorMessage = null
             )

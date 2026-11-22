@@ -32,6 +32,9 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import android.content.Intent
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -340,6 +343,35 @@ private fun RecipeCard(
                 }
 
                 Row {
+                    val context = LocalContext.current
+                    IconButton(
+                        onClick = {
+                            val shareText = buildString {
+                                appendLine("🍽️ Recept: ${recipe.name}")
+                                appendLine("Portioner: ${recipe.servings}")
+                                appendLine("Kalorier per portion: ${recipe.perServingCalories()} kcal")
+                                appendLine("Protein: ${formatMacroDecimal(recipe.perServingProtein())}g | Kolh: ${formatMacroDecimal(recipe.perServingCarbs())}g | Fett: ${formatMacroDecimal(recipe.perServingFat())}g")
+                                appendLine("Ingredienser:")
+                                ingredients.forEach { ing ->
+                                    appendLine("  - ${ing.name}: ${ing.amountGrams}g (${ing.calories} kcal)")
+                                }
+                                appendLine("Dela detta recept via Zevra!")
+                            }
+                            val sendIntent = Intent().apply {
+                                action = Intent.ACTION_SEND
+                                putExtra(Intent.EXTRA_TEXT, shareText)
+                                type = "text/plain"
+                            }
+                            context.startActivity(Intent.createChooser(sendIntent, "Dela recept"))
+                        },
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Share,
+                            contentDescription = "Dela ${recipe.name}",
+                            tint = EmeraldPrimary
+                        )
+                    }
                     IconButton(
                         onClick = onEdit,
                         modifier = Modifier.size(48.dp)

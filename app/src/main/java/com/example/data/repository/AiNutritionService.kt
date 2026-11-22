@@ -74,6 +74,7 @@ class AiNutritionService {
     private val visionAnalysisSchema = Schema.obj(
         properties = mapOf(
             "dish_name" to Schema.string("Huvudnamn på rätten på svenska (eller 'Ingen mat identifierades' om bilden inte innehåller mat)"),
+            "plate_proportion_reasoning" to Schema.string("Detaljerad visuell analys av tallrikens proportioner, volym (t.ex. dl ris) och vikt i gram (t.ex. gram protein)"),
             "total_calories" to Schema.integer("Total energi i kcal för hela måltiden"),
             "total_protein_g" to Schema.double("Totalt protein i gram (g) för hela måltiden"),
             "total_carbs_g" to Schema.double("Totala kolhydrater i gram (g) för hela måltiden"),
@@ -98,7 +99,7 @@ class AiNutritionService {
         STRICT INSTRUCTIONS:
         1. Language & Naming: All dish names, food items, and descriptions must be written in Swedish.
         2. Component Breakdown: Identify every visible food item, sauce, dressing, and side dish on the plate/bowl. Do not group everything into one lump sum if distinct items are visible. For single fruits, vegetables, or raw ingredients (e.g. apple, banana), identify the exact raw item.
-        3. Weight & Portion Estimation: Estimate realistic weights in grams (g) for each item based on visual references like plate size, cutlery, or standard portion volumes.
+        3. Weight, Volume & Plate Proportion Estimation: Visually analyze the plate proportions, size references (cutlery/plate diameter), and volumetric measures (e.g. dl rice, tablespoons of sauce) alongside precise weight in grams (e.g. grams of protein) for each item. Provide a detailed explanation in `plate_proportion_reasoning`.
         4. Nutritional Accuracy: Calculate exact or realistic estimates for Calories (kcal), Protein (g), Carbohydrates (g), and Fat (g) for both individual items and the total meal. Account for hidden fats like cooking oils or butter if typical for the dish.
         5. Non-Food Images: If the image contains no food (e.g., empty table, person, laptop, or emulator test pattern), return items: [], dish_name: "Ingen mat identifierades", and 0 for totals.
         6. Output Formatting: You MUST respond ONLY with a valid JSON object matching the schema below. Do NOT wrap the JSON in markdown code blocks (such as ```json), do not include introductory text, explanations, or concluding remarks.
@@ -106,6 +107,7 @@ class AiNutritionService {
         REQUIRED JSON STRUCTURE:
         {
           "dish_name": "Huvudnamn på rätten på svenska",
+          "plate_proportion_reasoning": "Visuell analys av tallrikens proportioner, volym i dl/matskedar och vikt i gram",
           "total_calories": 0,
           "total_protein_g": 0.0,
           "total_carbs_g": 0.0,
@@ -911,8 +913,13 @@ class AiNutritionService {
                 items.take(3).joinToString(" med ") { it.name }
             }
 
+            val plateProportionReasoning = json.optString("plate_proportion_reasoning", "").trim()
             val itemSummary = items.joinToString(", ") { "${it.name} (${it.amountGrams} g, ${it.calories} kcal)" }
             val reasoning = buildString {
+                if (plateProportionReasoning.isNotBlank()) {
+                    append(plateProportionReasoning)
+                    append(" ")
+                }
                 if (preparationNotes.isNotBlank()) {
                     append("Tillagning: ")
                     append(preparationNotes)

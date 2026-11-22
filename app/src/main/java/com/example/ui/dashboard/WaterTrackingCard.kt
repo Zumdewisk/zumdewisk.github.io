@@ -30,6 +30,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -46,11 +47,17 @@ fun WaterTrackingCard(
     currentMl: Int,
     targetMl: Int,
     onAddWater: (Int) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    steps: Long = 0L,
+    workoutsCount: Int = 0
 ) {
     val safeTarget = targetMl.coerceAtLeast(1)
     val progress = (currentMl.toFloat() / safeTarget.toFloat()).coerceIn(0f, 1f)
     val percentage = ((currentMl.toFloat() / safeTarget.toFloat()) * 100f).roundToInt()
+
+    val smartAdvice = remember(currentMl, targetMl, steps, workoutsCount) {
+        WaterReminderManager.evaluateSmartWaterAdvice(currentMl, targetMl, steps, workoutsCount)
+    }
 
     val animatedProgress by animateFloatAsState(
         targetValue = progress,
@@ -133,6 +140,30 @@ fun WaterTrackingCard(
                 trackColor = MacroWater.copy(alpha = 0.14f),
                 strokeCap = StrokeCap.Round
             )
+
+            if (smartAdvice.shouldRemind) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MacroWater.copy(alpha = 0.1f),
+                    border = BorderStroke(1.dp, MacroWater.copy(alpha = 0.25f))
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Text(
+                            text = smartAdvice.suggestionTitle,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MacroWater
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = smartAdvice.suggestionMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
 
             Spacer(modifier = Modifier.height(14.dp))
 

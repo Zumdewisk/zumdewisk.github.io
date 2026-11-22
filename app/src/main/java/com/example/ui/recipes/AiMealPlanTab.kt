@@ -19,6 +19,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import android.content.Intent
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -383,6 +386,37 @@ fun AiMealPlanTab(
                                 },
                                 fontWeight = FontWeight.Bold
                             )
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        val context = LocalContext.current
+                        OutlinedButton(
+                            onClick = {
+                                val shareText = buildString {
+                                    appendLine("📅 AI-genererat kostschema: ${plan.planTitle}")
+                                    appendLine("Totalt: ${plan.totalCalories} kcal (P: ${plan.totalProteinG}g, K: ${plan.totalCarbsG}g, F: ${plan.totalFatG}g)")
+                                    plan.meals.forEach { meal ->
+                                        appendLine("• ${meal.mealType.uppercase()}: ${meal.dishName} (${meal.calories} kcal)")
+                                    }
+                                    appendLine("Dela detta kostschema via Zevra!")
+                                }
+                                val sendIntent = Intent().apply {
+                                    action = Intent.ACTION_SEND
+                                    putExtra(Intent.EXTRA_TEXT, shareText)
+                                    type = "text/plain"
+                                }
+                                context.startActivity(Intent.createChooser(sendIntent, "Dela kostschema"))
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            border = BorderStroke(1.dp, EmeraldPrimary.copy(alpha = 0.5f))
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = null, tint = EmeraldPrimary)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Dela kostschema / Exportera", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                         }
                     }
                 }

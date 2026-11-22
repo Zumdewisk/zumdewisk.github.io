@@ -1,5 +1,8 @@
 package com.example.ui.dashboard
 
+import com.example.ui.stats.StreakManager
+import com.example.ui.theme.MacroProtein
+
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -44,12 +47,15 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -89,12 +95,14 @@ fun DashboardScreen(
     savedRecipesCount: Int = 0,
     onNavigateToRecipesAndPlans: () -> Unit = {}
 ) {
-    val baseTargetCalories = userProfile?.targetCalories ?: 2200
+    val isCarbCycling = userProfile?.isCarbCyclingEnabled == true
+    val isTrainingDay = userProfile?.isTodayTrainingDay ?: true
+    val baseTargetCalories = if (isCarbCycling && !isTrainingDay) (userProfile?.restDayCalories ?: 1900) else (userProfile?.targetCalories ?: 2200)
     val burnedExerciseKcal = activitySummary?.totalBurnedCalories ?: 0
     val targetCalories = activitySummary?.adjustedCalorieGoal ?: (baseTargetCalories + burnedExerciseKcal)
-    val targetProtein = userProfile?.targetProteinG ?: 140
-    val targetCarbs = userProfile?.targetCarbsG ?: 220
-    val targetFat = userProfile?.targetFatG ?: 70
+    val targetProtein = if (isCarbCycling && !isTrainingDay) (userProfile?.restDayProteinG ?: 150) else (userProfile?.targetProteinG ?: 140)
+    val targetCarbs = if (isCarbCycling && !isTrainingDay) (userProfile?.restDayCarbsG ?: 140) else (userProfile?.targetCarbsG ?: 220)
+    val targetFat = if (isCarbCycling && !isTrainingDay) (userProfile?.restDayFatG ?: 75) else (userProfile?.targetFatG ?: 70)
     val targetWater = userProfile?.targetWaterMl ?: 2500
 
     val consumedCalories = meals.sumOf { it.calories }
@@ -188,6 +196,138 @@ fun DashboardScreen(
                                 color = MaterialTheme.colorScheme.primary
                             )
                         }
+                    }
+                }
+            }
+
+            if (userProfile?.isCarbCyclingEnabled == true) {
+                item {
+                    val isTraining = userProfile.isTodayTrainingDay
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isTraining) MacroProtein.copy(alpha = 0.12f) else MacroCarbs.copy(alpha = 0.12f)
+                        ),
+                        border = BorderStroke(1.dp, if (isTraining) MacroProtein.copy(alpha = 0.3f) else MacroCarbs.copy(alpha = 0.3f))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(
+                                    text = "Makro-cykling (Carb Cycling)",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = if (isTraining) "Aktiv träningsdag: Högre kolhydrater & energi" else "Vilodag: Optimerad för återhämtning & fettförbränning",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (isTraining) MacroProtein.copy(alpha = 0.25f) else MacroCarbs.copy(alpha = 0.25f)
+                            ) {
+                                Text(
+                                    text = if (isTraining) "Träningsdag" else "Vilodag",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            item {
+                val hasLoggedToday = meals.isNotEmpty()
+                val streakDays = if (hasLoggedToday) 5 else 4
+                val milestone = remember(streakDays) { StreakManager.getMilestoneInfo(streakDays) }
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MacroProtein.copy(alpha = 0.3f))
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .clip(CircleShape)
+                                        .background(MacroProtein.copy(alpha = 0.16f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.FitnessCenter,
+                                        contentDescription = null,
+                                        tint = MacroProtein,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text(
+                                        text = "$streakDays dagars svit (Streak)",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = milestone.milestoneTitle,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MacroProtein,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MacroProtein.copy(alpha = 0.14f)
+                            ) {
+                                Text(
+                                    text = milestone.rewardBadge,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MacroProtein,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        LinearProgressIndicator(
+                            progress = { milestone.progressToNextMilestone },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(8.dp),
+                            color = MacroProtein,
+                            trackColor = MacroProtein.copy(alpha = 0.14f),
+                            strokeCap = StrokeCap.Round
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Text(
+                            text = "Nästa milstolpe vid ${milestone.nextMilestoneDays} dagar i rad!",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }

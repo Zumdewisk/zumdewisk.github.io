@@ -21,6 +21,12 @@ data class UserProfile(
     val targetCarbsG: Int = 220,
     val targetFatG: Int = 70,
     val targetWaterMl: Int = 2500,
+    val isCarbCyclingEnabled: Boolean = false,
+    val isTodayTrainingDay: Boolean = true,
+    val restDayCalories: Int = 1900,
+    val restDayProteinG: Int = 150,
+    val restDayCarbsG: Int = 140,
+    val restDayFatG: Int = 75,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
@@ -39,6 +45,12 @@ data class UserProfile(
             "targetCarbsG" to targetCarbsG,
             "targetFatG" to targetFatG,
             "targetWaterMl" to targetWaterMl,
+            "isCarbCyclingEnabled" to isCarbCyclingEnabled,
+            "isTodayTrainingDay" to isTodayTrainingDay,
+            "restDayCalories" to restDayCalories,
+            "restDayProteinG" to restDayProteinG,
+            "restDayCarbsG" to restDayCarbsG,
+            "restDayFatG" to restDayFatG,
             "createdAt" to createdAt,
             "updatedAt" to updatedAt
         ).filterValues { it != null }

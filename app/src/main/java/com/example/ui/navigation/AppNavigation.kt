@@ -326,7 +326,7 @@ fun AppNavigation(
                             windowInsets = WindowInsets(0, 0, 0, 0),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                        val activity = LocalContext.current as? Activity
+                        val activity = context as? Activity
 
                         // 1. Hem
                         NavigationBarItem(
