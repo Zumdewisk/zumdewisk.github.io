@@ -92,8 +92,6 @@ googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.W
 // This makes it easy to add them back in the future if needed.
 dependencies {
   coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
-  // Start.io SDK för Android
-  implementation("com.startapp:inapp-sdk:5.5.0") // Kontrollera gärna efter nyare version hos Start.io
 }
 dependencies {
   implementation(platform(libs.androidx.compose.bom))
@@ -134,6 +132,8 @@ dependencies {
   implementation(libs.firebase.appcheck.debug)
   implementation(libs.mlkit.barcode.scanning)
   implementation(libs.androidx.health.connect)
+  implementation(libs.play.services.ads)
+  implementation(libs.user.messaging.platform)
   implementation("org.tensorflow:tensorflow-lite:2.16.1")
   implementation("org.tensorflow:tensorflow-lite-gpu:2.16.1")
   implementation("org.tensorflow:tensorflow-lite-gpu-api:2.16.1")
@@ -144,7 +144,6 @@ dependencies {
   implementation(libs.okhttp)
   // implementation(libs.play.services.location)
   implementation(libs.retrofit)
-  implementation("com.startapp:inapp-sdk:5.+")
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)

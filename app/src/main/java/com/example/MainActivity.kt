@@ -65,7 +65,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import com.example.data.repository.AiNutritionService
-import com.startapp.sdk.adsbase.StartAppSDK
 
 sealed interface FirebaseInitState {
     data object Ready : FirebaseInitState
@@ -171,8 +170,8 @@ class MainActivity : ComponentActivity() {
         // Mandatory App Check configuration with launch intent before any UI or Firebase calls
         firebaseInitState = initializeFirebaseAndAppCheck(this, intent)
 
-        // Initiera Start.io SDK med ditt App ID
-        StartAppSDK.init(this, "210690701", true)
+        // Initiera UMP GDPR-samtycke och Google Mobile Ads / Interstitial-annonser
+        com.example.ads.AdManager.setupConsentAndAds(this)
 
         enableEdgeToEdge()
 

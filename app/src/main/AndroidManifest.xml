@@ -34,9 +34,10 @@
         android:largeHeap="true"
         android:hardwareAccelerated="true"
         android:theme="@style/Theme.MyApplication">
+        <!-- Google Mobile Ads App ID (Googles test-ID) -->
         <meta-data
-            android:name="com.startapp.sdk.APPLICATION_ID"
-            android:value="210690701" />
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="ca-app-pub-3940256099942544~3347511713" />
 
         <activity
             android:name=".MainActivity"

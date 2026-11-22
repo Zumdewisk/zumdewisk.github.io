@@ -1,6 +1,8 @@
 package com.example.ui.navigation
 
+import android.app.Activity
 import androidx.activity.compose.BackHandler
+import com.example.ads.AdManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -70,7 +72,7 @@ import com.example.health.HealthConnectManager
 import com.example.ui.activity.ActivityAndWorkoutScreen
 import com.example.ui.assistant.AiAssistantScreen
 import com.example.ui.auth.signOutUser
-import com.example.ui.components.WebBannerAd
+import com.example.ui.components.AdMobBannerAd
 import com.example.ui.dashboard.DashboardScreen
 import com.example.ui.diary.FoodDiaryScreen
 import com.example.ui.profile.ProfileScreen
@@ -302,15 +304,17 @@ fun AppNavigation(
         Scaffold(
             modifier = Modifier
                 .fillMaxSize()
-                .navigationBarsPadding()
-                .padding(bottom = 51.dp),
+                .navigationBarsPadding(),
             contentWindowInsets = WindowInsets.statusBars,
             snackbarHost = { SnackbarHost(snackbarHostState) },
             bottomBar = {
-                // Show bottom navigation on main tabs
-                val isMainTab = currentScreen in listOf(Screen.Dashboard, Screen.Diary, Screen.Stats, Screen.Profile)
-                if (isMainTab) {
-                    Column(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surface)
+                ) {
+                    val isMainTab = currentScreen in listOf(Screen.Dashboard, Screen.Diary, Screen.Stats, Screen.Profile)
+                    if (isMainTab) {
                         HorizontalDivider(
                             thickness = 1.dp,
                             color = MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)
@@ -322,10 +326,17 @@ fun AppNavigation(
                             windowInsets = WindowInsets(0, 0, 0, 0),
                             modifier = Modifier.fillMaxWidth()
                         ) {
+                        val activity = LocalContext.current as? Activity
+
                         // 1. Hem
                         NavigationBarItem(
                             selected = currentScreen == Screen.Dashboard,
-                            onClick = { currentScreen = Screen.Dashboard },
+                            onClick = {
+                                if (currentScreen != Screen.Dashboard) {
+                                    currentScreen = Screen.Dashboard
+                                    activity?.let { AdManager.onTabSwitched(it) }
+                                }
+                            },
                             icon = {
                                 Icon(
                                     imageVector = if (currentScreen == Screen.Dashboard) Icons.Filled.Home else Icons.Outlined.Home,
@@ -344,7 +355,12 @@ fun AppNavigation(
                         // 2. Dagbok
                         NavigationBarItem(
                             selected = currentScreen == Screen.Diary,
-                            onClick = { currentScreen = Screen.Diary },
+                            onClick = {
+                                if (currentScreen != Screen.Diary) {
+                                    currentScreen = Screen.Diary
+                                    activity?.let { AdManager.onTabSwitched(it) }
+                                }
+                            },
                             icon = {
                                 Icon(
                                     imageVector = if (currentScreen == Screen.Diary) Icons.Filled.Book else Icons.Outlined.Book,
@@ -367,7 +383,10 @@ fun AppNavigation(
                                 mealEntryOriginScreen = Screen.Dashboard
                                 autoLaunchCamera = true
                                 autoLaunchGallery = false
-                                currentScreen = Screen.LogFood
+                                if (currentScreen != Screen.LogFood) {
+                                    currentScreen = Screen.LogFood
+                                    activity?.let { AdManager.onTabSwitched(it) }
+                                }
                             },
                             icon = {
                                 Box(
@@ -405,7 +424,12 @@ fun AppNavigation(
                         // 4. Statistik
                         NavigationBarItem(
                             selected = currentScreen == Screen.Stats,
-                            onClick = { currentScreen = Screen.Stats },
+                            onClick = {
+                                if (currentScreen != Screen.Stats) {
+                                    currentScreen = Screen.Stats
+                                    activity?.let { AdManager.onTabSwitched(it) }
+                                }
+                            },
                             icon = {
                                 Icon(
                                     imageVector = if (currentScreen == Screen.Stats) Icons.Filled.BarChart else Icons.Outlined.BarChart,
@@ -424,7 +448,12 @@ fun AppNavigation(
                         // 5. Profil
                         NavigationBarItem(
                             selected = currentScreen == Screen.Profile,
-                            onClick = { currentScreen = Screen.Profile },
+                            onClick = {
+                                if (currentScreen != Screen.Profile) {
+                                    currentScreen = Screen.Profile
+                                    activity?.let { AdManager.onTabSwitched(it) }
+                                }
+                            },
                             icon = {
                                 Icon(
                                     imageVector = if (currentScreen == Screen.Profile) Icons.Filled.Person else Icons.Outlined.Person,
@@ -441,6 +470,13 @@ fun AppNavigation(
                         )
                     }
                 }
+                HorizontalDivider(
+                    thickness = 1.dp,
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
+                )
+                AdMobBannerAd(
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         }
     ) { innerPadding ->
@@ -872,21 +908,5 @@ fun AppNavigation(
             }
         }
     }
-
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surface)
-                .navigationBarsPadding()
-        ) {
-            HorizontalDivider(
-                thickness = 1.dp,
-                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
-            )
-            WebBannerAd(
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-    }
+}
 }
