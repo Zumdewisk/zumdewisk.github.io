@@ -100,13 +100,7 @@ fun AppNavigation(
 
     val repository = remember(currentUserId) { NutritionRepository(context) }
     val effectiveAiNutritionService = aiNutritionService ?: remember {
-        AiNutritionService().apply {
-            initializeFoodClassifier(context.applicationContext)
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        effectiveAiNutritionService.initializeFoodClassifier(context.applicationContext)
+        AiNutritionService()
     }
 
     // Date state

@@ -134,7 +134,7 @@ class AiNutritionService {
 
     private val visionModel by lazy {
         firebaseAi.generativeModel(
-            modelName = "gemini-3.8-flash",
+            modelName = PRIMARY_MODEL_NAME,
             generationConfig = visionConfig,
             systemInstruction = content {
                 text(clinicalNutritionistSystemPrompt)
@@ -142,29 +142,38 @@ class AiNutritionService {
         )
     }
 
-    // Secondary vision model with separate quota pool (allows unlimited failover when primary model reaches daily quota)
-    private val visionModelLite by lazy {
+    // Secondary vision model (Gemini 3.1 Flash-Lite) used automatically if primary Gemini 3.5 Flash-Lite fails
+    private val visionModelFallback by lazy {
         firebaseAi.generativeModel(
-            modelName = "gemini-3.5-flash-lite",
+            modelName = FALLBACK_MODEL_NAME,
             generationConfig = visionConfig,
             systemInstruction = content {
                 text(clinicalNutritionistSystemPrompt)
             }
         )
     }
+
+    private val chatSystemPrompt = """
+        Du är Zevras personliga AI-dietist och kostrådgivare.
+        Ditt mål är att hjälpa användaren nå sina mål med vetenskapligt underbyggda, empatiska och konkreta råd på svenska.
+        Du känner till användarens profil (mål, kalorier, makron) och dagens registrerade måltider som tillhandahålls i kontexten.
+        Svara kortfattat, hjälpsamt och motiverande. Använd alltid svenska mått (g, ml, kcal).
+    """.trimIndent()
 
     private val chatModel by lazy {
         firebaseAi.generativeModel(
-            modelName = "gemini-3.8-flash",
+            modelName = PRIMARY_MODEL_NAME,
             systemInstruction = content {
-                text(
-                    """
-                    Du är Zevras personliga AI-dietist och kostrådgivare.
-                    Ditt mål är att hjälpa användaren nå sina mål med vetenskapligt underbyggda, empatiska och konkreta råd på svenska.
-                    Du känner till användarens profil (mål, kalorier, makron) och dagens registrerade måltider som tillhandahålls i kontexten.
-                    Svara kortfattat, hjälpsamt och motiverande. Använd alltid svenska mått (g, ml, kcal).
-                    """.trimIndent()
-                )
+                text(chatSystemPrompt)
+            }
+        )
+    }
+
+    private val chatModelFallback by lazy {
+        firebaseAi.generativeModel(
+            modelName = FALLBACK_MODEL_NAME,
+            systemInstruction = content {
+                text(chatSystemPrompt)
             }
         )
     }
@@ -220,7 +229,7 @@ class AiNutritionService {
 
     private val foodSearchModel by lazy {
         firebaseAi.generativeModel(
-            modelName = "gemini-3.8-flash",
+            modelName = PRIMARY_MODEL_NAME,
             generationConfig = foodSearchGenerationConfig,
             systemInstruction = content {
                 text(foodSearchSystemPrompt)
@@ -228,9 +237,9 @@ class AiNutritionService {
         )
     }
 
-    private val foodSearchModelLite by lazy {
+    private val foodSearchModelFallback by lazy {
         firebaseAi.generativeModel(
-            modelName = "gemini-3.5-flash-lite",
+            modelName = FALLBACK_MODEL_NAME,
             generationConfig = foodSearchGenerationConfig,
             systemInstruction = content {
                 text(foodSearchSystemPrompt)
@@ -310,7 +319,7 @@ class AiNutritionService {
 
     private val mealPlanModel by lazy {
         firebaseAi.generativeModel(
-            modelName = "gemini-3.8-flash",
+            modelName = PRIMARY_MODEL_NAME,
             generationConfig = mealPlanConfig,
             systemInstruction = content {
                 text(mealPlanSystemPrompt)
@@ -318,9 +327,9 @@ class AiNutritionService {
         )
     }
 
-    private val mealPlanModelLite by lazy {
+    private val mealPlanModelFallback by lazy {
         firebaseAi.generativeModel(
-            modelName = "gemini-3.5-flash-lite",
+            modelName = FALLBACK_MODEL_NAME,
             generationConfig = mealPlanConfig,
             systemInstruction = content {
                 text(mealPlanSystemPrompt)
@@ -377,7 +386,7 @@ class AiNutritionService {
 
     private val correctionModel by lazy {
         firebaseAi.generativeModel(
-            modelName = "gemini-3.8-flash",
+            modelName = PRIMARY_MODEL_NAME,
             generationConfig = mealCorrectionConfig,
             systemInstruction = content {
                 text(mealCorrectionSystemPrompt)
@@ -385,9 +394,9 @@ class AiNutritionService {
         )
     }
 
-    private val correctionModelLite by lazy {
+    private val correctionModelFallback by lazy {
         firebaseAi.generativeModel(
-            modelName = "gemini-3.5-flash-lite",
+            modelName = FALLBACK_MODEL_NAME,
             generationConfig = mealCorrectionConfig,
             systemInstruction = content {
                 text(mealCorrectionSystemPrompt)
@@ -471,110 +480,128 @@ class AiNutritionService {
         }
     }
 
+    private fun toFriendlyCloudException(e: Throwable, featureName: String): Exception {
+        if (e is TimeoutCancellationException) {
+            return Exception("$featureName tog för lång tid (timeout). Kontrollera internetanslutningen och försök igen.", e)
+        }
+        val msg = "${e.javaClass.name} ${e.message} ${e.cause?.message}".lowercase()
+        val isNetworkIssue = e is java.net.UnknownHostException ||
+            e is java.net.ConnectException ||
+            e is java.net.SocketTimeoutException ||
+            msg.contains("unable to resolve host") ||
+            msg.contains("failed to connect") ||
+            msg.contains("network") ||
+            msg.contains("offline") ||
+            msg.contains("unreachable")
+        if (isNetworkIssue) {
+            return Exception("Ingen internetanslutning. $featureName kunde inte nå Gemini-servrarna ($PRIMARY_MODEL_NAME / $FALLBACK_MODEL_NAME).", e)
+        }
+        return if (e is Exception) e else Exception(e.localizedMessage ?: "$featureName misslyckades", e)
+    }
+
     suspend fun searchGlobalFoodDatabase(query: String): Result<List<SwedishFoodEntry>> {
         val cleanQuery = query.trim()
         if (cleanQuery.isBlank()) return Result.success(emptyList())
 
-        if (isFirebaseReady()) {
-            try {
-                return withTimeout(45_000L) {
-                    val prompt = """
-                        Sök i svenska matbutikers (ICA, Willys, Hemköp, Coop, Lidl) och världens livsmedelsdatabas efter varor, varumärken, rätter och restaurangmat som matchar: "$cleanQuery".
-                        Returnera ett JSON-objekt med nyckeln "items" innehållande 4 till 6 träffar med exakta näringsvärden per 100g.
-                    """.trimIndent()
+        if (!isFirebaseReady()) {
+            return Result.failure(IllegalStateException("Firebase är inte redo. Kontrollera internetanslutningen och försök igen."))
+        }
 
-                    val response = try {
-                        executeWithAppCheckRetry {
-                            foodSearchModel.generateContent(content { text(prompt) })
-                        }
-                    } catch (primaryErr: Exception) {
-                        Log.w(TAG, "[Food Search] Primär modell misslyckades, växlar till gemini-3.5-flash-lite", primaryErr)
-                        executeWithAppCheckRetry {
-                            foodSearchModelLite.generateContent(content { text(prompt) })
-                        }
+        return try {
+            withTimeout(45_000L) {
+                val prompt = """
+                    Sök i svenska matbutikers (ICA, Willys, Hemköp, Coop, Lidl) och världens livsmedelsdatabas efter varor, varumärken, rätter och restaurangmat som matchar: "$cleanQuery".
+                    Returnera ett JSON-objekt med nyckeln "items" innehållande 4 till 6 träffar med exakta näringsvärden per 100g.
+                """.trimIndent()
+
+                val response = try {
+                    executeWithAppCheckRetry {
+                        foodSearchModel.generateContent(content { text(prompt) })
                     }
-
-                    val rawText = response.text ?: throw IllegalStateException("Tomt svar från AI-databasen")
-                    val cleanedJson = rawText
-                        .trim()
-                        .removePrefix("```json")
-                        .removePrefix("```")
-                        .removeSuffix("```")
-                        .trim()
-
-                    val jsonArray = when {
-                        cleanedJson.startsWith("{") -> {
-                            val rootObj = JSONObject(cleanedJson)
-                            rootObj.optJSONArray("items")
-                                ?: rootObj.optJSONArray("foods")
-                                ?: rootObj.optJSONArray("results")
-                                ?: throw IllegalStateException("AI-svaret saknade fältet 'items'")
-                        }
-                        cleanedJson.startsWith("[") -> JSONArray(cleanedJson)
-                        else -> {
-                            val startObj = cleanedJson.indexOf('{')
-                            val startArr = cleanedJson.indexOf('[')
-                            when {
-                                startObj >= 0 && (startArr < 0 || startObj < startArr) ->
-                                    JSONObject(cleanedJson.substring(startObj)).optJSONArray("items")
-                                        ?: throw IllegalStateException("Kunde inte tolka JSON-svar")
-                                startArr >= 0 -> JSONArray(cleanedJson.substring(startArr))
-                                else -> throw IllegalStateException("Ogiltigt JSON-svar från AI-databasen")
-                            }
-                        }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (primaryErr: Exception) {
+                    Log.w(TAG, "[Food Search] Primär modell ($PRIMARY_MODEL_NAME) misslyckades, växlar till $FALLBACK_MODEL_NAME", primaryErr)
+                    executeWithAppCheckRetry {
+                        foodSearchModelFallback.generateContent(content { text(prompt) })
                     }
-
-                    val results = mutableListOf<SwedishFoodEntry>()
-                    for (i in 0 until jsonArray.length()) {
-                        val obj = jsonArray.optJSONObject(i) ?: continue
-                        val rawType = obj.optString("itemType", "GLOBAL_AI").uppercase()
-                        val itemType = when (rawType) {
-                            "SUPERMARKET" -> FoodEntryType.SUPERMARKET
-                            "BRAND" -> FoodEntryType.BRAND
-                            "MEAL" -> FoodEntryType.MEAL
-                            "FASTFOOD" -> FoodEntryType.FASTFOOD
-                            "BASIC" -> FoodEntryType.BASIC
-                            "DRINK" -> FoodEntryType.DRINK
-                            else -> FoodEntryType.GLOBAL_AI
-                        }
-                        val itemName = obj.optString("name", "").trim().ifBlank { cleanQuery }
-                        results.add(
-                            SwedishFoodEntry(
-                                id = "ai_${UUID.randomUUID()}",
-                                name = itemName,
-                                brand = obj.optString("brand", "").trim().takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) },
-                                category = obj.optString("category", "Butik & Global databas").trim().ifBlank { "Butik & Global databas" },
-                                itemType = itemType,
-                                caloriesPer100g = obj.optInt("caloriesPer100g", 120).coerceIn(0, 1200),
-                                proteinPer100g = obj.optDouble("proteinPer100g", 0.0).coerceAtLeast(0.0),
-                                carbsPer100g = obj.optDouble("carbsPer100g", 0.0).coerceAtLeast(0.0),
-                                fatPer100g = obj.optDouble("fatPer100g", 0.0).coerceAtLeast(0.0),
-                                fiberPer100g = obj.optDouble("fiberPer100g", 0.0).coerceAtLeast(0.0),
-                                sugarPer100g = obj.optDouble("sugarPer100g", 0.0).coerceAtLeast(0.0),
-                                saltPer100g = obj.optDouble("saltPer100g", 0.0).coerceAtLeast(0.0),
-                                standardPortionGrams = obj.optInt("standardPortionGrams", 100).coerceIn(5, 2000),
-                                standardPortionDescription = obj.optString("standardPortionDescription", "1 normal portion").ifBlank { "1 normal portion" },
-                                densityGramsPerMl = obj.optDouble("densityGramsPerMl", 1.0).coerceIn(0.2, 2.0)
-                            )
-                        )
-                    }
-                    Result.success(results)
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "[Food Search] Moln-sökning misslyckades (${e.message}). Använder lokal sökfallback...", e)
-            }
-        }
 
-        // Local fallback: search local database or generate smart fallback entries
-        val localMatches = SwedishFoodDatabase.search(cleanQuery)
-        val finalMatches = if (localMatches.isNotEmpty()) {
-            localMatches
-        } else {
-            getSmartSearchFallback(cleanQuery)
+                val rawText = response.text ?: throw IllegalStateException("Tomt svar från AI-databasen")
+                val cleanedJson = rawText
+                    .trim()
+                    .removePrefix("```json")
+                    .removePrefix("```")
+                    .removeSuffix("```")
+                    .trim()
+
+                val jsonArray = when {
+                    cleanedJson.startsWith("{") -> {
+                        val rootObj = JSONObject(cleanedJson)
+                        rootObj.optJSONArray("items")
+                            ?: rootObj.optJSONArray("foods")
+                            ?: rootObj.optJSONArray("results")
+                            ?: throw IllegalStateException("AI-svaret saknade fältet 'items'")
+                    }
+                    cleanedJson.startsWith("[") -> JSONArray(cleanedJson)
+                    else -> {
+                        val startObj = cleanedJson.indexOf('{')
+                        val startArr = cleanedJson.indexOf('[')
+                        when {
+                            startObj >= 0 && (startArr < 0 || startObj < startArr) ->
+                                JSONObject(cleanedJson.substring(startObj)).optJSONArray("items")
+                                    ?: throw IllegalStateException("Kunde inte tolka JSON-svar")
+                            startArr >= 0 -> JSONArray(cleanedJson.substring(startArr))
+                            else -> throw IllegalStateException("Ogiltigt JSON-svar från AI-databasen")
+                        }
+                    }
+                }
+
+                val results = mutableListOf<SwedishFoodEntry>()
+                for (i in 0 until jsonArray.length()) {
+                    val obj = jsonArray.optJSONObject(i) ?: continue
+                    val rawType = obj.optString("itemType", "GLOBAL_AI").uppercase()
+                    val itemType = when (rawType) {
+                        "SUPERMARKET" -> FoodEntryType.SUPERMARKET
+                        "BRAND" -> FoodEntryType.BRAND
+                        "MEAL" -> FoodEntryType.MEAL
+                        "FASTFOOD" -> FoodEntryType.FASTFOOD
+                        "BASIC" -> FoodEntryType.BASIC
+                        "DRINK" -> FoodEntryType.DRINK
+                        else -> FoodEntryType.GLOBAL_AI
+                    }
+                    val itemName = obj.optString("name", "").trim().ifBlank { cleanQuery }
+                    results.add(
+                        SwedishFoodEntry(
+                            id = "ai_${UUID.randomUUID()}",
+                            name = itemName,
+                            brand = obj.optString("brand", "").trim().takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) },
+                            category = obj.optString("category", "Butik & Global databas").trim().ifBlank { "Butik & Global databas" },
+                            itemType = itemType,
+                            caloriesPer100g = obj.optInt("caloriesPer100g", 120).coerceIn(0, 1200),
+                            proteinPer100g = obj.optDouble("proteinPer100g", 0.0).coerceAtLeast(0.0),
+                            carbsPer100g = obj.optDouble("carbsPer100g", 0.0).coerceAtLeast(0.0),
+                            fatPer100g = obj.optDouble("fatPer100g", 0.0).coerceAtLeast(0.0),
+                            fiberPer100g = obj.optDouble("fiberPer100g", 0.0).coerceAtLeast(0.0),
+                            sugarPer100g = obj.optDouble("sugarPer100g", 0.0).coerceAtLeast(0.0),
+                            saltPer100g = obj.optDouble("saltPer100g", 0.0).coerceAtLeast(0.0),
+                            standardPortionGrams = obj.optInt("standardPortionGrams", 100).coerceIn(5, 2000),
+                            standardPortionDescription = obj.optString("standardPortionDescription", "1 normal portion").ifBlank { "1 normal portion" },
+                            densityGramsPerMl = obj.optDouble("densityGramsPerMl", 1.0).coerceIn(0.2, 2.0)
+                        )
+                    )
+                }
+                Result.success(results)
+            }
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "[Food Search] Timeout vid molnsökning ($PRIMARY_MODEL_NAME -> $FALLBACK_MODEL_NAME)", e)
+            Result.failure(toFriendlyCloudException(e, "AI-livsmedelsdatabasen"))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "[Food Search] Både $PRIMARY_MODEL_NAME och $FALLBACK_MODEL_NAME misslyckades", e)
+            Result.failure(toFriendlyCloudException(e, "AI-livsmedelsdatabasen"))
         }
-        return Result.success(finalMatches)
     }
 
     /**
@@ -686,6 +713,9 @@ class AiNutritionService {
     }
 
     companion object {
+        const val PRIMARY_MODEL_NAME = "gemini-3.5-flash-lite"
+        const val FALLBACK_MODEL_NAME = "gemini-3.1-flash-lite"
+
         @Volatile
         var lastAnalysisResult: AiMealAnalysisResult? = null
         @Volatile
@@ -969,64 +999,61 @@ class AiNutritionService {
         val scaled = scaleBitmapForAi(bitmap, 384)
         Log.d(TAG, "[Gemini Vision] 📸 Mottog bild: dimensioner=${bitmap.width}x${bitmap.height}, nedskalad=${scaled.width}x${scaled.height}")
 
-        if (isFirebaseReady()) {
-            try {
-                return withTimeout(60_000L) {
-                    val basePromptText = if (!mealHint.isNullOrBlank()) {
-                        "Analysera måltid (ledtråd: $mealHint). Identifiera livsmedel med weight_g, kalorier, protein_g, carbs_g, fat_g, preparation_notes på svenska. Svara ENDAST med giltig JSON."
-                    } else {
-                        "Analysera måltid. Identifiera livsmedel med weight_g, kalorier, protein_g, carbs_g, fat_g, preparation_notes på svenska. Om ej mat, items: []. Svara ENDAST med giltig JSON."
-                    }
-                    val learnedRulesBlock = AiFoodCorrection.formatRulesForPrompt(learnedCorrections)
-                    val promptText = if (learnedRulesBlock.isNotBlank()) {
-                        "$basePromptText\n\n$learnedRulesBlock"
-                    } else {
-                        basePromptText
-                    }
-
-                    val promptContent = content {
-                        image(scaled)
-                        text(promptText)
-                    }
-
-                    Log.d(TAG, "[Gemini Vision] 🚀 Skickar API-anrop till Gemini AI (primär modell)...")
-                    val response = try {
-                        executeWithAppCheckRetry {
-                            visionModel.generateContent(promptContent)
-                        }
-                    } catch (primaryErr: Exception) {
-                        Log.w(TAG, "[Gemini Vision] ⚠️ Primär modell misslyckades (${primaryErr.javaClass.simpleName}: ${primaryErr.message}). Försöker med sekundär modell...", primaryErr)
-                        executeWithAppCheckRetry {
-                            visionModelLite.generateContent(promptContent)
-                        }
-                    }
-                    val duration = System.currentTimeMillis() - startTime
-
-                    val rawText = response.text ?: throw IllegalStateException("Gemini AI returnerade ett tomt svar.")
-                    Log.d(TAG, "[Gemini Vision] 📥 Svar mottaget från Gemini på ${duration}ms!")
-
-                    val result = parseVisionResponseJson(rawText, mealHint)
-                    Result.success(result)
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                val duration = System.currentTimeMillis() - startTime
-                Log.w(TAG, "[Gemini Vision] ⚠️ Moln-AI bildanalys misslyckades efter ${duration}ms (${e.javaClass.simpleName}: ${e.message}). Växlar transparent till lokal bildanalysmotor...", e)
-            }
-        } else {
-            Log.w(TAG, "[Gemini Vision] Firebase är inte redo, använder lokal bildanalysmotor direkt.")
+        if (!isFirebaseReady()) {
+            Log.e(TAG, "[Gemini Vision] Firebase är inte redo.")
+            return Result.failure(IllegalStateException("Firebase-instansen är inte redo. Kontrollera internetanslutningen och försök igen."))
         }
 
-        // Seamless fallback to on-device visual analysis engine (100% offline, zero token / quota requirement)
-        val visualResult = analyzeBitmapVisually(scaled)
-        return if (visualResult.items.isNotEmpty()) {
-            Log.d(TAG, "[Gemini Vision] ✅ Lokal bildanalysmotor identifierade: ${visualResult.mealName} (${visualResult.totalCalories} kcal)")
-            Result.success(visualResult)
-        } else {
-            val smartFallback = getSmartFallbackAnalysis(mealHint)
-            Log.d(TAG, "[Gemini Vision] ✅ Smart fallback-analys genererade: ${smartFallback.mealName} (${smartFallback.totalCalories} kcal)")
-            Result.success(smartFallback)
+        return try {
+            withTimeout(60_000L) {
+                val basePromptText = if (!mealHint.isNullOrBlank()) {
+                    "Analysera måltid (ledtråd: $mealHint). Identifiera livsmedel med weight_g, kalorier, protein_g, carbs_g, fat_g, preparation_notes på svenska. Svara ENDAST med giltig JSON."
+                } else {
+                    "Analysera måltid. Identifiera livsmedel med weight_g, kalorier, protein_g, carbs_g, fat_g, preparation_notes på svenska. Om ej mat, items: []. Svara ENDAST med giltig JSON."
+                }
+                val learnedRulesBlock = AiFoodCorrection.formatRulesForPrompt(learnedCorrections)
+                val promptText = if (learnedRulesBlock.isNotBlank()) {
+                    "$basePromptText\n\n$learnedRulesBlock"
+                } else {
+                    basePromptText
+                }
+
+                val promptContent = content {
+                    image(scaled)
+                    text(promptText)
+                }
+
+                Log.d(TAG, "[Gemini Vision] 🚀 Skickar API-anrop till $PRIMARY_MODEL_NAME...")
+                val response = try {
+                    executeWithAppCheckRetry {
+                        visionModel.generateContent(promptContent)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (primaryErr: Exception) {
+                    Log.w(TAG, "[Gemini Vision] ⚠️ Primär modell ($PRIMARY_MODEL_NAME) misslyckades (${primaryErr.javaClass.simpleName}: ${primaryErr.message}). Försöker med $FALLBACK_MODEL_NAME...", primaryErr)
+                    executeWithAppCheckRetry {
+                        visionModelFallback.generateContent(promptContent)
+                    }
+                }
+                val duration = System.currentTimeMillis() - startTime
+
+                val rawText = response.text ?: throw IllegalStateException("Gemini AI returnerade ett tomt svar.")
+                Log.d(TAG, "[Gemini Vision] 📥 Svar mottaget från Gemini på ${duration}ms!")
+
+                val result = parseVisionResponseJson(rawText, mealHint)
+                Result.success(result)
+            }
+        } catch (e: TimeoutCancellationException) {
+            val duration = System.currentTimeMillis() - startTime
+            Log.e(TAG, "[Gemini Vision] ⏱️ Timeout efter ${duration}ms", e)
+            Result.failure(toFriendlyCloudException(e, "Bildanalys"))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val duration = System.currentTimeMillis() - startTime
+            Log.e(TAG, "[Gemini Vision] ❌ Både $PRIMARY_MODEL_NAME och $FALLBACK_MODEL_NAME misslyckades efter ${duration}ms (${e.javaClass.simpleName}: ${e.message})", e)
+            Result.failure(toFriendlyCloudException(e, "Bildanalys"))
         }
     }
 
@@ -1506,13 +1533,14 @@ class AiNutritionService {
             throw e
         } catch (e: Exception) {
             if (!emittedAny && isAppCheckError(e)) {
-                Log.w(TAG, "App Check error in chat stream; refreshing token and retrying...", e)
+                Log.w(TAG, "App Check error in $PRIMARY_MODEL_NAME chat stream; refreshing token and retrying...", e)
                 refreshAppCheckTokenSilently()
                 try {
                     withTimeout(60_000L) {
                         chatModel.generateContentStream(contextPrompt).collect { chunk ->
                             val text = chunk.text
                             if (!text.isNullOrEmpty()) {
+                                emittedAny = true
                                 emit(text)
                             }
                         }
@@ -1521,19 +1549,59 @@ class AiNutritionService {
                 } catch (retryEx: CancellationException) {
                     throw retryEx
                 } catch (retryEx: Exception) {
-                    Log.e(TAG, "Chat streaming retry failed", retryEx)
-                    emit("\n[Kunde inte generera svar: ${retryEx.localizedMessage ?: "Okänt fel"}]")
-                    return@flow
+                    Log.w(TAG, "Chat streaming retry with $PRIMARY_MODEL_NAME failed; falling back to $FALLBACK_MODEL_NAME", retryEx)
                 }
+            } else {
+                Log.w(TAG, "Chat streaming with $PRIMARY_MODEL_NAME failed; falling back to $FALLBACK_MODEL_NAME", e)
             }
-            Log.e(TAG, "Chat streaming failed", e)
-            emit("\n[Kunde inte generera svar: ${e.localizedMessage ?: "Okänt fel"}]")
+
+            if (!emittedAny) {
+                try {
+                    withTimeout(60_000L) {
+                        chatModelFallback.generateContentStream(contextPrompt).collect { chunk ->
+                            val text = chunk.text
+                            if (!text.isNullOrEmpty()) {
+                                emittedAny = true
+                                emit(text)
+                            }
+                        }
+                    }
+                } catch (fallbackEx: CancellationException) {
+                    throw fallbackEx
+                } catch (fallbackEx: Exception) {
+                    if (!emittedAny && isAppCheckError(fallbackEx)) {
+                        refreshAppCheckTokenSilently()
+                        try {
+                            withTimeout(60_000L) {
+                                chatModelFallback.generateContentStream(contextPrompt).collect { chunk ->
+                                    val text = chunk.text
+                                    if (!text.isNullOrEmpty()) {
+                                        emittedAny = true
+                                        emit(text)
+                                    }
+                                }
+                            }
+                            return@flow
+                        } catch (fallbackRetryEx: CancellationException) {
+                            throw fallbackRetryEx
+                        } catch (fallbackRetryEx: Exception) {
+                            Log.e(TAG, "Chat streaming fallback retry with $FALLBACK_MODEL_NAME failed", fallbackRetryEx)
+                            emit("\n[Kunde inte generera svar: ${toFriendlyCloudException(fallbackRetryEx, "AI-kostcoach").localizedMessage ?: "Okänt fel"}]")
+                            return@flow
+                        }
+                    }
+                    Log.e(TAG, "Chat streaming fallback with $FALLBACK_MODEL_NAME failed", fallbackEx)
+                    emit("\n[Kunde inte generera svar: ${toFriendlyCloudException(fallbackEx, "AI-kostcoach").localizedMessage ?: "Okänt fel"}]")
+                }
+            } else {
+                emit("\n[Strömningen avbröts: ${toFriendlyCloudException(e, "AI-kostcoach").localizedMessage ?: "Okänt fel"}]")
+            }
         }
     }
 
     /**
      * Generates a complete Swedish daily meal plan via Gemini with forced JSON schema.
-     * Transparently retries App Check errors and falls back to gemini-3.5-flash-lite or local engine.
+     * Uses gemini-3.5-flash-lite first and falls back to gemini-3.1-flash-lite on failure.
      */
     suspend fun generateDailyMealPlan(
         dailyCalories: Int,
@@ -1545,170 +1613,55 @@ class AiNutritionService {
         val safeCalories = dailyCalories.coerceIn(1000, 6000)
         val safeMealsPerDay = mealsPerDay.coerceIn(3, 6)
 
-        if (isFirebaseReady()) {
-            try {
-                return withTimeout(60_000L) {
-                    val prefsText = if (preferences.isEmpty()) "Balanserad svensk kost" else preferences.joinToString(", ")
+        if (!isFirebaseReady()) {
+            return Result.failure(IllegalStateException("Firebase är inte redo. Kontrollera internetanslutningen och försök igen."))
+        }
 
-                    val prompt = buildString {
-                        appendLine("Skapa ett komplett dagsschema med följande parametrar:")
-                        appendLine("- Dagligt kalorimål: $safeCalories kcal")
-                        appendLine("- Antal måltider per dag: $safeMealsPerDay st")
-                        appendLine("- Kostpreferenser: $prefsText")
-                        if (userProfile != null) {
-                            appendLine("- Användarens makromål: Protein ${userProfile.targetProteinG} g, Kolhydrater ${userProfile.targetCarbsG} g, Fett ${userProfile.targetFatG} g")
-                        }
-                        if (customNotes.isNotBlank()) {
-                            appendLine("- Extra önskemål: ${customNotes.trim()}")
-                        }
-                        append("Svara ENDAST med giltig JSON som matchar schemat och innehåller exakt $safeMealsPerDay måltider.")
+        return try {
+            withTimeout(60_000L) {
+                val prefsText = if (preferences.isEmpty()) "Balanserad svensk kost" else preferences.joinToString(", ")
+
+                val prompt = buildString {
+                    appendLine("Skapa ett komplett dagsschema med följande parametrar:")
+                    appendLine("- Dagligt kalorimål: $safeCalories kcal")
+                    appendLine("- Antal måltider per dag: $safeMealsPerDay st")
+                    appendLine("- Kostpreferenser: $prefsText")
+                    if (userProfile != null) {
+                        appendLine("- Användarens makromål: Protein ${userProfile.targetProteinG} g, Kolhydrater ${userProfile.targetCarbsG} g, Fett ${userProfile.targetFatG} g")
                     }
-
-                    val promptContent = content { text(prompt) }
-                    val response = try {
-                        executeWithAppCheckRetry {
-                            mealPlanModel.generateContent(promptContent)
-                        }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "[MealPlan AI] Primär modell misslyckades, växlar till gemini-3.5-flash-lite", e)
-                        executeWithAppCheckRetry {
-                            mealPlanModelLite.generateContent(promptContent)
-                        }
+                    if (customNotes.isNotBlank()) {
+                        appendLine("- Extra önskemål: ${customNotes.trim()}")
                     }
-
-                    val rawJson = response.text
-                        ?: throw IllegalStateException("Gemini returnerade ett tomt svar för kostschemat.")
-                    val parsed = AiDailyMealPlan.parseFromJson(rawJson, safeCalories)
-                    Result.success(parsed)
+                    append("Svara ENDAST med giltig JSON som matchar schemat och innehåller exakt $safeMealsPerDay måltider.")
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "[MealPlan AI] Moln-kostschema misslyckades (${e.message}). Skapar lokalt anpassat kostschema...", e)
+
+                val promptContent = content { text(prompt) }
+                val response = try {
+                    executeWithAppCheckRetry {
+                        mealPlanModel.generateContent(promptContent)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "[MealPlan AI] Primär modell ($PRIMARY_MODEL_NAME) misslyckades, växlar till $FALLBACK_MODEL_NAME", e)
+                    executeWithAppCheckRetry {
+                        mealPlanModelFallback.generateContent(promptContent)
+                    }
+                }
+
+                val rawJson = response.text
+                    ?: throw IllegalStateException("Gemini returnerade ett tomt svar för kostschemat.")
+                val parsed = AiDailyMealPlan.parseFromJson(rawJson, safeCalories)
+                Result.success(parsed)
             }
-        }
-
-        // Local fallback daily meal plan generator
-        val fallbackPlan = generateLocalDailyMealPlan(safeCalories, safeMealsPerDay, preferences)
-        return Result.success(fallbackPlan)
-    }
-
-    private fun generateLocalDailyMealPlan(
-        dailyCalories: Int,
-        mealsPerDay: Int,
-        preferences: List<String>
-    ): AiDailyMealPlan {
-        val safeCalories = dailyCalories.coerceIn(1000, 6000)
-        val safeMealsCount = mealsPerDay.coerceIn(3, 6)
-
-        val mealRatios = when (safeMealsCount) {
-            3 -> listOf(0.30, 0.35, 0.35)
-            4 -> listOf(0.25, 0.35, 0.15, 0.25)
-            5 -> listOf(0.20, 0.15, 0.30, 0.15, 0.20)
-            else -> listOf(0.20, 0.10, 0.30, 0.10, 0.20, 0.10)
-        }
-
-        val mealLabels = when (safeMealsCount) {
-            3 -> listOf("Frukost", "Lunch", "Middag")
-            4 -> listOf("Frukost", "Lunch", "Mellanmål", "Middag")
-            5 -> listOf("Frukost", "Mellanmål 1", "Lunch", "Mellanmål 2", "Middag")
-            else -> listOf("Frukost", "Mellanmål 1", "Lunch", "Mellanmål 2", "Middag", "Kvällsmål")
-        }
-
-        val mealTypes = when (safeMealsCount) {
-            3 -> listOf("frukost", "lunch", "middag")
-            4 -> listOf("frukost", "lunch", "mellanmal", "middag")
-            5 -> listOf("frukost", "mellanmal", "lunch", "mellanmal", "middag")
-            else -> listOf("frukost", "mellanmal", "lunch", "mellanmal", "middag", "mellanmal")
-        }
-
-        val plannedMeals = mutableListOf<com.example.data.model.PlannedMeal>()
-        for (i in 0 until safeMealsCount) {
-            val targetMealCal = (safeCalories * mealRatios[i]).toInt()
-            val label = mealLabels[i]
-            val type = mealTypes[i]
-
-            val (dishName, ingredients) = createLocalMealForCategory(type, targetMealCal)
-            val mealCal = ingredients.sumOf { it.calories }
-            val mealProt = Math.round(ingredients.sumOf { it.protein } * 10.0) / 10.0
-            val mealCarbs = Math.round(ingredients.sumOf { it.carbs } * 10.0) / 10.0
-            val mealFat = Math.round(ingredients.sumOf { it.fat } * 10.0) / 10.0
-            val mealFiber = Math.round(ingredients.sumOf { it.fiber } * 10.0) / 10.0
-
-            plannedMeals.add(
-                com.example.data.model.PlannedMeal(
-                    mealType = type,
-                    mealLabel = label,
-                    dishName = dishName,
-                    description = "Balanserad svensk måltid anpassad för ditt kalorimål ($targetMealCal kcal).",
-                    calories = mealCal,
-                    proteinG = mealProt,
-                    carbsG = mealCarbs,
-                    fatG = mealFat,
-                    fiberG = mealFiber,
-                    ingredients = ingredients
-                )
-            )
-        }
-
-        val totalCal = plannedMeals.sumOf { it.calories }
-        val totalProt = Math.round(plannedMeals.sumOf { it.proteinG } * 10.0) / 10.0
-        val totalCarbs = Math.round(plannedMeals.sumOf { it.carbsG } * 10.0) / 10.0
-        val totalFat = Math.round(plannedMeals.sumOf { it.fatG } * 10.0) / 10.0
-
-        return AiDailyMealPlan(
-            planTitle = "Personligt balanserat dagsschema ($safeCalories kcal)",
-            summary = "Näringsrikt dagsschema med $safeMealsCount måltider anpassade efter ditt kalorimål.",
-            targetCalories = safeCalories,
-            totalCalories = totalCal,
-            totalProteinG = totalProt,
-            totalCarbsG = totalCarbs,
-            totalFatG = totalFat,
-            meals = plannedMeals
-        )
-    }
-
-    private fun createLocalMealForCategory(type: String, targetCalories: Int): Pair<String, List<FoodIngredient>> {
-        val scale = targetCalories.toDouble() / 400.0
-        return when (type) {
-            "frukost" -> {
-                val oatG = (180 * scale).toInt().coerceIn(100, 350)
-                val berriesG = (75 * scale).toInt().coerceIn(30, 150)
-                val milkG = (150 * scale).toInt().coerceIn(50, 300)
-                "Havregrynsgröt med färska bär och lättmjölk" to listOf(
-                    SwedishFoodDatabase.calculateNutritionForFood("Havregrynsgröt", oatG),
-                    SwedishFoodDatabase.calculateNutritionForFood("Bär färska hallon och blåbär", berriesG),
-                    SwedishFoodDatabase.calculateNutritionForFood("Mjölk lättmjölk", milkG)
-                )
-            }
-            "mellanmal" -> {
-                val kvargG = (200 * scale).toInt().coerceIn(100, 300)
-                val nutsG = (20 * scale).toInt().coerceIn(10, 40)
-                "Kvarg naturell med nötmix" to listOf(
-                    SwedishFoodDatabase.calculateNutritionForFood("Lättkvarg naturell", kvargG),
-                    SwedishFoodDatabase.calculateNutritionForFood("Nötmix osaltade nötter", nutsG)
-                )
-            }
-            "lunch" -> {
-                val chickenG = (160 * scale).toInt().coerceIn(100, 250)
-                val riceG = (150 * scale).toInt().coerceIn(80, 300)
-                val vegG = (100 * scale).toInt().coerceIn(50, 200)
-                "Grillad kycklingfilé med ris och ångade grönsaker" to listOf(
-                    SwedishFoodDatabase.calculateNutritionForFood("Kycklingfilé grillad", chickenG),
-                    SwedishFoodDatabase.calculateNutritionForFood("Ris kokt vitt", riceG),
-                    SwedishFoodDatabase.calculateNutritionForFood("Grönsaker blandade ångade", vegG)
-                )
-            }
-            else -> {
-                val salmonG = (160 * scale).toInt().coerceIn(100, 250)
-                val potG = (180 * scale).toInt().coerceIn(100, 350)
-                val sauceG = (40 * scale).toInt().coerceIn(20, 80)
-                "Ugnsbakad laxfilé med kokt potatis och dillsås" to listOf(
-                    SwedishFoodDatabase.calculateNutritionForFood("Laxfilé ugnsbakad", salmonG),
-                    SwedishFoodDatabase.calculateNutritionForFood("Kokt potatis", potG),
-                    SwedishFoodDatabase.calculateNutritionForFood("Dillsås romsås", sauceG)
-                )
-            }
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "[MealPlan AI] Timeout ($PRIMARY_MODEL_NAME -> $FALLBACK_MODEL_NAME)", e)
+            Result.failure(toFriendlyCloudException(e, "Kostschema-AI"))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "[MealPlan AI] Både $PRIMARY_MODEL_NAME och $FALLBACK_MODEL_NAME misslyckades", e)
+            Result.failure(toFriendlyCloudException(e, "Kostschema-AI"))
         }
     }
 
@@ -1729,122 +1682,71 @@ class AiNutritionService {
             return Result.failure(IllegalArgumentException("Beskriv vad som blev fel innan du skickar till AI:n."))
         }
 
-        if (isFirebaseReady()) {
-            try {
-                return withTimeout(60_000L) {
-                    val currentItemsSummary = if (currentIngredients.isNotEmpty()) {
-                        currentIngredients.joinToString("\n") { ing ->
-                            "- ${ing.name}: ${ing.amountGrams} g (${ing.calories} kcal, P ${ing.protein} g, K ${ing.carbs} g, F ${ing.fat} g)"
-                        }
-                    } else {
-                        "- Inga delkomponenter listade"
-                    }
-
-                    val memoryBlock = AiFoodCorrection.formatRulesForPrompt(existingRules)
-                    val prompt = buildString {
-                        appendLine("URSPRUNGLIG AI-ANALYS:")
-                        appendLine("- Måltidsnamn: $originalMealName")
-                        appendLine("- Ingredienser just nu:")
-                        appendLine(currentItemsSummary)
-                        appendLine()
-                        appendLine("ANVÄNDARENS RÄTTNING / FEEDBACK:")
-                        appendLine("\"$cleanFeedback\"")
-                        if (memoryBlock.isNotBlank()) {
-                            appendLine()
-                            appendLine(memoryBlock)
-                        }
-                        appendLine()
-                        append("Korrigera måltiden och näringsvärdena exakt enligt användarens feedback, formulera en lärd regel i 'learned_rule' och bekräfta i 'ai_reply'. Svara ENDAST med giltig JSON.")
-                    }
-
-                    val scaledBitmap = imageBitmap?.let { scaleBitmapForAi(it, 800) }
-                    val promptContent = content {
-                        if (scaledBitmap != null) {
-                            image(scaledBitmap)
-                        }
-                        text(prompt)
-                    }
-
-                    val response = try {
-                        executeWithAppCheckRetry {
-                            correctionModel.generateContent(promptContent)
-                        }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "[MealCorrection AI] Primär modell misslyckades, växlar till gemini-3.5-flash-lite", e)
-                        executeWithAppCheckRetry {
-                            correctionModelLite.generateContent(promptContent)
-                        }
-                    }
-
-                    val rawJson = response.text
-                        ?: throw IllegalStateException("Gemini returnerade ett tomt svar vid rättning.")
-                    val parsed = AiMealCorrectionParser.parse(rawJson, originalMealName)
-                    Result.success(parsed)
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "[MealCorrection AI] Moln-rättning misslyckades (${e.message}). Genomför lokal rättning...", e)
-            }
+        if (!isFirebaseReady()) {
+            return Result.failure(IllegalStateException("Firebase är inte redo. Kontrollera internetanslutningen och försök igen."))
         }
 
-        // Local fallback meal correction
-        val localCorrection = generateLocalMealCorrection(originalMealName, currentIngredients, cleanFeedback)
-        return Result.success(localCorrection)
-    }
-
-    private fun generateLocalMealCorrection(
-        originalMealName: String,
-        currentIngredients: List<FoodIngredient>,
-        feedback: String
-    ): AiMealCorrectionResult {
-        val cleanFb = feedback.lowercase()
-        val updatedIngredients = currentIngredients.map { ing ->
-            if (cleanFb.contains(ing.name.lowercase())) {
-                val portionMatch = Regex("(\\d+)\\s*g").find(cleanFb)
-                if (portionMatch != null) {
-                    val newG = portionMatch.groupValues[1].toIntOrNull() ?: ing.amountGrams
-                    SwedishFoodDatabase.calculateNutritionForFood(ing.name, newG)
+        return try {
+            withTimeout(60_000L) {
+                val currentItemsSummary = if (currentIngredients.isNotEmpty()) {
+                    currentIngredients.joinToString("\n") { ing ->
+                        "- ${ing.name}: ${ing.amountGrams} g (${ing.calories} kcal, P ${ing.protein} g, K ${ing.carbs} g, F ${ing.fat} g)"
+                    }
                 } else {
-                    ing
+                    "- Inga delkomponenter listade"
                 }
-            } else {
-                ing
+
+                val memoryBlock = AiFoodCorrection.formatRulesForPrompt(existingRules)
+                val prompt = buildString {
+                    appendLine("URSPRUNGLIG AI-ANALYS:")
+                    appendLine("- Måltidsnamn: $originalMealName")
+                    appendLine("- Ingredienser just nu:")
+                    appendLine(currentItemsSummary)
+                    appendLine()
+                    appendLine("ANVÄNDARENS RÄTTNING / FEEDBACK:")
+                    appendLine("\"$cleanFeedback\"")
+                    if (memoryBlock.isNotBlank()) {
+                        appendLine()
+                        appendLine(memoryBlock)
+                    }
+                    appendLine()
+                    append("Korrigera måltiden och näringsvärdena exakt enligt användarens feedback, formulera en lärd regel i 'learned_rule' och bekräfta i 'ai_reply'. Svara ENDAST med giltig JSON.")
+                }
+
+                val scaledBitmap = imageBitmap?.let { scaleBitmapForAi(it, 800) }
+                val promptContent = content {
+                    if (scaledBitmap != null) {
+                        image(scaledBitmap)
+                    }
+                    text(prompt)
+                }
+
+                val response = try {
+                    executeWithAppCheckRetry {
+                        correctionModel.generateContent(promptContent)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "[MealCorrection AI] Primär modell ($PRIMARY_MODEL_NAME) misslyckades, växlar till $FALLBACK_MODEL_NAME", e)
+                    executeWithAppCheckRetry {
+                        correctionModelFallback.generateContent(promptContent)
+                    }
+                }
+
+                val rawJson = response.text
+                    ?: throw IllegalStateException("Gemini returnerade ett tomt svar vid rättning.")
+                val parsed = AiMealCorrectionParser.parse(rawJson, originalMealName)
+                Result.success(parsed)
             }
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "[MealCorrection AI] Timeout ($PRIMARY_MODEL_NAME -> $FALLBACK_MODEL_NAME)", e)
+            Result.failure(toFriendlyCloudException(e, "AI-rättning"))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "[MealCorrection AI] Både $PRIMARY_MODEL_NAME och $FALLBACK_MODEL_NAME misslyckades", e)
+            Result.failure(toFriendlyCloudException(e, "AI-rättning"))
         }
-
-        val dishName = if (cleanFb.contains("kyckling")) {
-            originalMealName.replace("nötfärs", "kyckling", ignoreCase = true)
-                .replace("biff", "kyckling", ignoreCase = true)
-        } else {
-            originalMealName
-        }
-
-        val totalCal = updatedIngredients.sumOf { it.calories }
-        val totalProt = Math.round(updatedIngredients.sumOf { it.protein } * 10.0) / 10.0
-        val totalCarbs = Math.round(updatedIngredients.sumOf { it.carbs } * 10.0) / 10.0
-        val totalFat = Math.round(updatedIngredients.sumOf { it.fat } * 10.0) / 10.0
-        val totalFiber = Math.round(updatedIngredients.sumOf { it.fiber } * 10.0) / 10.0
-
-        val analysisResult = AiMealAnalysisResult(
-            mealName = dishName,
-            confidence = "high",
-            reasoning = "Uppdaterades utifrån din feedback: $feedback",
-            totalCalories = totalCal,
-            totalProteinG = totalProt,
-            totalCarbsG = totalCarbs,
-            totalFatG = totalFat,
-            totalFiberG = totalFiber,
-            totalSugarG = 0.0,
-            totalSaltG = 0.0,
-            items = updatedIngredients
-        )
-
-        return AiMealCorrectionResult(
-            correctedAnalysis = analysisResult,
-            learningRule = "Kom ihåg användarens inställningar: $feedback",
-            aiReply = "Jag har uppdaterat $dishName enligt dina önskemål!",
-            keywords = feedback.take(30)
-        )
     }
 }
