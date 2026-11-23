@@ -26,9 +26,13 @@ import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.SystemUpdate
+import com.example.BuildConfig
 import com.example.data.model.AiFoodCorrection
 import com.example.data.repository.AiNutritionService
 import com.example.ui.diagnostics.AiDiagnosticsDialog
+import com.example.update.AppUpdateManager
+import com.example.update.AppUpdateState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.TextButton
@@ -51,6 +55,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -82,7 +87,8 @@ fun ProfileScreen(
     onSignOut: () -> Unit,
     aiNutritionService: AiNutritionService? = null,
     learnedCorrections: List<AiFoodCorrection> = emptyList(),
-    onDeleteLearnedRule: (String) -> Unit = {}
+    onDeleteLearnedRule: (String) -> Unit = {},
+    appUpdateManager: AppUpdateManager? = null
 ) {
     val authUser = Firebase.auth.currentUser
     var showAiMemoryDialog by remember { mutableStateOf(false) }
@@ -596,6 +602,84 @@ fun ProfileScreen(
                                 .testTag("profile_ai_diagnostics_button")
                         ) {
                             Text("Diagnostik", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+
+            // Appversion & manuell uppdateringskontroll
+            if (appUpdateManager != null) {
+                item {
+                    val updateState by appUpdateManager.state.collectAsState()
+                    val isBusy = updateState is AppUpdateState.Checking || updateState is AppUpdateState.Downloading
+
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("profile_app_update_card"),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, EmeraldPrimary.copy(alpha = 0.35f))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .clip(CircleShape)
+                                        .background(EmeraldPrimary.copy(alpha = 0.16f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.SystemUpdate,
+                                        contentDescription = null,
+                                        tint = EmeraldDark,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text(
+                                        text = "Zevra v${BuildConfig.VERSION_NAME}",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp
+                                    )
+                                    Text(
+                                        text = "Byggkod ${BuildConfig.VERSION_CODE} • Uppdatera direkt i appen",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.width(8.dp))
+
+                            OutlinedButton(
+                                onClick = { appUpdateManager.checkForUpdates(manual = true) },
+                                enabled = !isBusy,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .height(48.dp)
+                                    .testTag("check_app_update_button")
+                            ) {
+                                if (isBusy) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                } else {
+                                    Text("Sök uppdatering", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                }
+                            }
                         }
                     }
                 }

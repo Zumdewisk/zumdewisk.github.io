@@ -156,12 +156,24 @@ jobs:
         with:
           gradle-version: "9.6.0"
 
+      - name: Beräkna appversion för in-app-uppdatering
+        id: version_meta
+        run: |
+          VERSION_CODE=$((100 + GITHUB_RUN_NUMBER))
+          VERSION_NAME="1.1.${GITHUB_RUN_NUMBER}"
+          echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+          echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+          echo "APK-version för detta bygge: v${VERSION_NAME} (kod ${VERSION_CODE})"
+
       - name: Bygg signerad APK
         env:
           JAVA_TOOL_OPTIONS: "-Djava.awt.headless=true"
         run: |
           set +e
-          gradle assembleDebug --no-daemon --no-configuration-cache --stacktrace --max-workers=2 \
+          gradle assembleDebug \
+            -PappVersionCode="${{ steps.version_meta.outputs.version_code }}" \
+            -PappVersionName="${{ steps.version_meta.outputs.version_name }}" \
+            --no-daemon --no-configuration-cache --stacktrace --max-workers=2 \
             -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=1g -Djava.awt.headless=true -Dfile.encoding=UTF-8" \
             2>&1 | tee /tmp/gradle-build.log
           BUILD_RC=${PIPESTATUS[0]}
@@ -180,10 +192,30 @@ jobs:
             exit "$BUILD_RC"
           fi
 
-      - name: Förbered APK-fil för nedladdning
+      - name: Förbered APK-fil och version.json för nedladdning
         run: |
           mkdir -p release-apks
           cp app/build/outputs/apk/debug/app-debug.apk release-apks/Zevra.apk
+          PUBLISHED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          COMMIT_MSG=$(git log -1 --pretty=%s 2>/dev/null || echo "Ny version av Zevra")
+          VERSION_CODE="${{ steps.version_meta.outputs.version_code }}" \
+          VERSION_NAME="${{ steps.version_meta.outputs.version_name }}" \
+          PUBLISHED_AT="$PUBLISHED_AT" \
+          COMMIT_MSG="$COMMIT_MSG" \
+          python3 - <<'PY'
+          import json, os
+
+          data = {
+              "versionCode": int(os.environ["VERSION_CODE"]),
+              "versionName": os.environ["VERSION_NAME"],
+              "apkUrl": "https://github.com/Zumdewisk/NYNYNY/releases/download/latest/Zevra.apk",
+              "releaseNotes": f"Senaste uppdateringen: {os.environ['COMMIT_MSG']}",
+              "publishedAt": os.environ["PUBLISHED_AT"],
+          }
+          with open("release-apks/version.json", "w", encoding="utf-8") as f:
+              json.dump(data, f, ensure_ascii=False, indent=2)
+          PY
+          cat release-apks/version.json
 
       - name: Kontrollera om release-keystore finns
         id: check_release
@@ -208,7 +240,10 @@ jobs:
           JAVA_TOOL_OPTIONS: "-Djava.awt.headless=true"
         run: |
           echo "$KEYSTORE_BASE64" | tr -d '\r\n' | base64 -d > "$KEYSTORE_PATH"
-          gradle assembleRelease --no-daemon --no-configuration-cache --stacktrace --max-workers=2 \
+          gradle assembleRelease \
+            -PappVersionCode="${{ steps.version_meta.outputs.version_code }}" \
+            -PappVersionName="${{ steps.version_meta.outputs.version_name }}" \
+            --no-daemon --no-configuration-cache --stacktrace --max-workers=2 \
             -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=1g -Djava.awt.headless=true -Dfile.encoding=UTF-8"
           cp app/build/outputs/apk/release/app-release.apk release-apks/Zevra-release.apk
 
@@ -223,7 +258,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
-          files: release-apks/*.apk
+          files: |
+            release-apks/*.apk
+            release-apks/version.json
           generate_release_notes: true
 
       - name: Publicera senaste APK till GitHub Releases (latest)
@@ -238,7 +275,9 @@ jobs:
             ### Så laddar du ner och installerar på Android
             1. Tryck på **`Zevra.apk`** under **Assets** nedan för att ladda ner appen.
             2. Öppna den nedladdade filen på din Android-telefon och tillåt installation från okända källor om systemet frågar.
-          files: release-apks/*.apk
+          files: |
+            release-apks/*.apk
+            release-apks/version.json
           make_latest: true
           draft: false
           prerelease: false

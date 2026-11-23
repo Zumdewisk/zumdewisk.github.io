@@ -16,8 +16,10 @@ android {
     applicationId = "com.aistudio.naringai.kzpxvm"
     minSdk = 26
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    val ciVersionCode = project.findProperty("appVersionCode")?.toString()?.toIntOrNull()
+    val ciVersionName = project.findProperty("appVersionName")?.toString()?.takeIf { it.isNotBlank() }
+    versionCode = ciVersionCode ?: 2
+    versionName = ciVersionName ?: "1.1"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

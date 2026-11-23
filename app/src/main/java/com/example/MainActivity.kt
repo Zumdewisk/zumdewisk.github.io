@@ -65,6 +65,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import com.example.data.repository.AiNutritionService
+import com.example.ui.components.AppUpdateDialog
+import com.example.update.AppUpdateManager
 
 sealed interface FirebaseInitState {
     data object Ready : FirebaseInitState
@@ -207,6 +209,12 @@ fun AppRoot(
     val isFirebaseReady = firebaseInitState is FirebaseInitState.Ready
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    val appUpdateManager = remember(context) { AppUpdateManager(context) }
+
+    // Kontrollera automatiskt vid uppstart om det finns en nyare Zevra-APK
+    LaunchedEffect(Unit) {
+        appUpdateManager.checkForUpdates(manual = false)
+    }
 
     // Automatically warm up / force-refresh App Check token on startup so AI & Firestore work immediately
     // without requiring the user to open Diagnostics and press Spara & Ominstallera + Refresh.
@@ -394,7 +402,10 @@ fun AppRoot(
         val aiNutritionService = remember { AiNutritionService() }
         AppNavigation(
             currentUserId = currentUser!!.uid,
-            aiNutritionService = aiNutritionService
+            aiNutritionService = aiNutritionService,
+            appUpdateManager = appUpdateManager
         )
     }
+
+    AppUpdateDialog(appUpdateManager = appUpdateManager)
 }

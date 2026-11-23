@@ -83,6 +83,7 @@ import com.example.ui.scanner.MealAnalysisReviewScreen
 import com.example.ui.stats.StatsScreen
 import com.example.ui.theme.EmeraldDark
 import com.example.ui.theme.EmeraldPrimary
+import com.example.update.AppUpdateManager
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.launch
@@ -92,7 +93,8 @@ import java.time.format.DateTimeFormatter
 @Composable
 fun AppNavigation(
     currentUserId: String,
-    aiNutritionService: AiNutritionService? = null
+    aiNutritionService: AiNutritionService? = null,
+    appUpdateManager: AppUpdateManager? = null
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -831,7 +833,8 @@ fun AppNavigation(
                                     snackbarHostState.showSnackbar("Inlärd AI-regel borttagen")
                                 }
                             }
-                        }
+                        },
+                        appUpdateManager = appUpdateManager
                     )
                 }
 
