@@ -72,9 +72,11 @@ import androidx.compose.material.icons.filled.FlipCameraAndroid
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tune
+import com.example.data.local.FavoritesManager
 import com.example.data.model.SwedishFoodEntry
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -192,7 +194,7 @@ fun FoodScannerScreen(
     // Shutter flash animation
     val flashAlpha = remember { Animatable(0f) }
 
-    // Scanner Mode: 0 = AI Matkamera (Plate / Image), 1 = Streckkodsläsare (Barcode / EAN)
+    // Scanner Mode: 0 = AI Matkamera (Plate / Image), 1 = Streckkodsläsare (Barcode / EAN), 2 = Näringstabell (OCR/Vision)
     var scanMode by remember { mutableIntStateOf(0) }
     var detectedBarcode by remember { mutableStateOf<String?>(null) }
     var scannedFoodEntry by remember { mutableStateOf<SwedishFoodEntry?>(null) }
@@ -253,11 +255,40 @@ fun FoodScannerScreen(
                     scannedFoodEntry = entry
                     // Open interactive portion sizing sheet directly on scanner
                 } else {
-                    errorMessage = "Ingen vara med streckkoden $clean hittades. Du kan söka manuellt eller fota varan med AI-kameran."
+                    errorMessage = "Ingen vara med streckkoden $clean hittades i databasen. Fota baksidans näringsdeklaration för att läsa in produkten direkt!"
                 }
             } catch (t: Throwable) {
                 isAnalyzing = false
                 errorMessage = "Kunde inte söka upp streckkod: ${t.localizedMessage ?: t.message}"
+            }
+        }
+    }
+
+    // OCR / Vision processing for nutrition facts tables on packaging back
+    fun startNutritionLabelProcessing(rawBitmap: Bitmap, barcodeHint: String? = detectedBarcode) {
+        val bitmap = safelyDownsampleBitmap(rawBitmap, 1024)
+        selectedBitmap = bitmap
+        isAnalyzing = true
+        errorMessage = null
+        statusMessage = "Läser av näringstabell per 100 g med Gemini Vision..."
+
+        analysisJob?.cancel()
+        analysisJob = coroutineScope.launch {
+            try {
+                val res = aiNutritionService.analyzeNutritionLabelImage(bitmap, barcodeHint = barcodeHint)
+                isAnalyzing = false
+                res.onSuccess { entry ->
+                    FavoritesManager.saveScannedProduct(context, entry)
+                    scannedFoodEntry = entry
+                }.onFailure { err ->
+                    errorMessage = err.localizedMessage ?: "Kunde inte läsa av näringsdeklarationen. Prova med bättre ljus och skärpa."
+                }
+            } catch (e: CancellationException) {
+                isAnalyzing = false
+                throw e
+            } catch (t: Throwable) {
+                isAnalyzing = false
+                errorMessage = "Fel vid skanning av näringstabell: ${t.localizedMessage ?: t.message}"
             }
         }
     }
@@ -345,8 +376,11 @@ fun FoodScannerScreen(
         contract = ActivityResultContracts.TakePicturePreview()
     ) { bitmap ->
         if (bitmap != null) {
-            val safeBmp = safelyDownsampleBitmap(bitmap, 800)
-            startImageProcessing(safeBmp)
+            if (scanMode == 2) {
+                startNutritionLabelProcessing(safelyDownsampleBitmap(bitmap, 1024))
+            } else {
+                startImageProcessing(safelyDownsampleBitmap(bitmap, 800))
+            }
         }
     }
 
@@ -355,6 +389,7 @@ fun FoodScannerScreen(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
         if (uri != null) {
+            val isLabelMode = scanMode == 2
             coroutineScope.launch(Dispatchers.IO) {
                 try {
                     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -367,7 +402,7 @@ fun FoodScannerScreen(
                         throw IllegalStateException("Den valda filen är inte en giltig bild.")
                     }
 
-                    val maxDimension = 800
+                    val maxDimension = if (isLabelMode) 1024 else 800
                     var sampleSize = 1
                     while (maxOf(bounds.outWidth, bounds.outHeight) / sampleSize > maxDimension) {
                         sampleSize *= 2
@@ -383,7 +418,11 @@ fun FoodScannerScreen(
                     } ?: throw IllegalStateException("Kunde inte avkoda vald bild.")
                     val safeBmp = safelyDownsampleBitmap(bitmap, maxDimension)
                     withContext(Dispatchers.Main) {
-                        startImageProcessing(safeBmp)
+                        if (isLabelMode) {
+                            startNutritionLabelProcessing(safeBmp)
+                        } else {
+                            startImageProcessing(safeBmp)
+                        }
                     }
                 } catch (e: CancellationException) {
                     throw e
@@ -553,25 +592,28 @@ fun FoodScannerScreen(
         if (capture == null) {
             val previewBmp = previewView.bitmap
             if (previewBmp != null) {
-                val finalBitmap = safelyDownsampleBitmap(previewBmp, 800)
-                if (scanMode == 1) {
-                    isAnalyzing = true
-                    statusMessage = "Läser av streckkod..."
-                    val inputImage = InputImage.fromBitmap(finalBitmap, 0)
-                    BarcodeScanning.getClient().process(inputImage)
-                        .addOnSuccessListener { barcodes ->
-                            val first = barcodes.firstOrNull()?.rawValue
-                            if (!first.isNullOrBlank()) {
-                                processScannedBarcode(first)
-                            } else {
+                val targetMax = if (scanMode == 2) 1024 else 800
+                val finalBitmap = safelyDownsampleBitmap(previewBmp, targetMax)
+                when (scanMode) {
+                    1 -> {
+                        isAnalyzing = true
+                        statusMessage = "Läser av streckkod..."
+                        val inputImage = InputImage.fromBitmap(finalBitmap, 0)
+                        BarcodeScanning.getClient().process(inputImage)
+                            .addOnSuccessListener { barcodes ->
+                                val first = barcodes.firstOrNull()?.rawValue
+                                if (!first.isNullOrBlank()) {
+                                    processScannedBarcode(first)
+                                } else {
+                                    startImageProcessing(finalBitmap)
+                                }
+                            }
+                            .addOnFailureListener {
                                 startImageProcessing(finalBitmap)
                             }
-                        }
-                        .addOnFailureListener {
-                            startImageProcessing(finalBitmap)
-                        }
-                } else {
-                    startImageProcessing(finalBitmap)
+                    }
+                    2 -> startNutritionLabelProcessing(finalBitmap)
+                    else -> startImageProcessing(finalBitmap)
                 }
             } else {
                 systemCameraLauncher.launch(null)
@@ -606,7 +648,8 @@ fun FoodScannerScreen(
                                 rawBitmap
                             }
 
-                            val finalBitmap = rotatedBitmap?.let { safelyDownsampleBitmap(it, 800) }
+                            val maxDim = if (scanMode == 2) 1024 else 800
+                            val finalBitmap = rotatedBitmap?.let { safelyDownsampleBitmap(it, maxDim) }
 
                             if (scanMode == 1 && finalBitmap != null) {
                                 // Try barcode scan on captured high-res frame
@@ -618,7 +661,7 @@ fun FoodScannerScreen(
                                         if (!first.isNullOrBlank()) {
                                             processScannedBarcode(first)
                                         } else {
-                                            // Fallback to food vision if no barcode barcode was detected in photo
+                                            // Fallback to nutrition label OCR or food vision if no barcode detected
                                             startImageProcessing(finalBitmap)
                                         }
                                     }
@@ -628,7 +671,11 @@ fun FoodScannerScreen(
                             } else {
                                 withContext(Dispatchers.Main) {
                                     if (finalBitmap != null) {
-                                        startImageProcessing(finalBitmap)
+                                        if (scanMode == 2) {
+                                            startNutritionLabelProcessing(finalBitmap)
+                                        } else {
+                                            startImageProcessing(finalBitmap)
+                                        }
                                     } else {
                                         isAnalyzing = false
                                         errorMessage = "Kunde inte läsa bilden från kameran. Prova igen eller använd systemkameran."
@@ -734,7 +781,7 @@ fun FoodScannerScreen(
                         Icon(Icons.Default.Close, contentDescription = "Stäng", tint = Color.White)
                     }
 
-                    // Mode Switcher: AI Matkamera vs Streckkod
+                    // Mode Switcher: Måltid vs Streckkod vs Näringstabell
                     Surface(
                         shape = RoundedCornerShape(22.dp),
                         color = Color.Black.copy(alpha = 0.75f),
@@ -749,25 +796,30 @@ fun FoodScannerScreen(
                                 shape = RoundedCornerShape(18.dp),
                                 color = if (scanMode == 0) EmeraldPrimary else Color.Transparent,
                                 modifier = Modifier
-                                    .clickable { scanMode = 0 }
+                                    .clickable {
+                                        scanMode = 0
+                                        detectedBarcode = null
+                                    }
                                     .testTag("scanner_mode_ai_photo")
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.AutoAwesome,
                                         contentDescription = null,
                                         tint = if (scanMode == 0) Color.Black else Color.White.copy(alpha = 0.8f),
-                                        modifier = Modifier.size(15.dp)
+                                        modifier = Modifier.size(14.dp)
                                     )
-                                    Spacer(modifier = Modifier.width(5.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
                                     Text(
                                         text = "Måltid",
                                         color = if (scanMode == 0) Color.Black else Color.White,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        softWrap = false
                                     )
                                 }
                             }
@@ -781,21 +833,53 @@ fun FoodScannerScreen(
                                     .testTag("scanner_mode_barcode")
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.QrCodeScanner,
                                         contentDescription = null,
                                         tint = if (scanMode == 1) Color.Black else Color.White.copy(alpha = 0.8f),
-                                        modifier = Modifier.size(15.dp)
+                                        modifier = Modifier.size(14.dp)
                                     )
-                                    Spacer(modifier = Modifier.width(5.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
                                     Text(
                                         text = "Streckkod",
                                         color = if (scanMode == 1) Color.Black else Color.White,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                }
+                            }
+
+                            // Nutrition Label OCR/Vision Mode Tab
+                            Surface(
+                                shape = RoundedCornerShape(18.dp),
+                                color = if (scanMode == 2) EmeraldPrimary else Color.Transparent,
+                                modifier = Modifier
+                                    .clickable { scanMode = 2 }
+                                    .testTag("scanner_mode_nutrition_label")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.ReceiptLong,
+                                        contentDescription = null,
+                                        tint = if (scanMode == 2) Color.Black else Color.White.copy(alpha = 0.8f),
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "Tabell",
+                                        color = if (scanMode == 2) Color.Black else Color.White,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        softWrap = false
                                     )
                                 }
                             }
@@ -876,7 +960,11 @@ fun FoodScannerScreen(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Text(
-                                    text = if (scanMode == 1) "Testa streckkod:" else "Testa mat:",
+                                    text = when (scanMode) {
+                                        1 -> "Testa streckkod:"
+                                        2 -> "Näringstabell (OCR):"
+                                        else -> "Testa mat:"
+                                    },
                                     color = Color.White.copy(alpha = 0.75f),
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
@@ -884,54 +972,67 @@ fun FoodScannerScreen(
                                     softWrap = false
                                 )
 
-                                if (scanMode == 1) {
-                                    SampleMealPill(
-                                        emoji = "🥜",
-                                        label = "Garant Jordnöt",
-                                        onClick = { processScannedBarcode("7330797084532") }
-                                    )
-                                    SampleMealPill(
-                                        emoji = "🥛",
-                                        label = "Arla Mjölk",
-                                        onClick = { processScannedBarcode("7310865000378") }
-                                    )
-                                    SampleMealPill(
-                                        emoji = "🌾",
-                                        label = "AXA Havregryn",
-                                        onClick = { processScannedBarcode("7310751160032") }
-                                    )
-                                    SampleMealPill(
-                                        emoji = "🥣",
-                                        label = "Keso",
-                                        onClick = { processScannedBarcode("7310865080011") }
-                                    )
-                                } else {
-                                    SampleMealPill(
-                                        emoji = "🥗",
-                                        label = "Sallad",
-                                        onClick = {
-                                            val bmp = BitmapFactory.decodeResource(context.resources, R.drawable.img_chicken_salad)
-                                            startImageProcessing(bmp, null)
-                                        }
-                                    )
+                                when (scanMode) {
+                                    1 -> {
+                                        SampleMealPill(
+                                            emoji = "🥜",
+                                            label = "Garant Jordnöt",
+                                            onClick = { processScannedBarcode("7330797084532") }
+                                        )
+                                        SampleMealPill(
+                                            emoji = "🥛",
+                                            label = "Arla Mjölk",
+                                            onClick = { processScannedBarcode("7310865000378") }
+                                        )
+                                        SampleMealPill(
+                                            emoji = "🌾",
+                                            label = "AXA Havregryn",
+                                            onClick = { processScannedBarcode("7310751160032") }
+                                        )
+                                        SampleMealPill(
+                                            emoji = "🥣",
+                                            label = "Keso",
+                                            onClick = { processScannedBarcode("7310865080011") }
+                                        )
+                                    }
+                                    2 -> {
+                                        Text(
+                                            text = "Fota tabellen per 100 g/ml så skapar Gemini produkten direkt",
+                                            color = Color.White.copy(alpha = 0.9f),
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                    }
+                                    else -> {
+                                        SampleMealPill(
+                                            emoji = "🥗",
+                                            label = "Sallad",
+                                            onClick = {
+                                                val bmp = BitmapFactory.decodeResource(context.resources, R.drawable.img_chicken_salad)
+                                                startImageProcessing(bmp, null)
+                                            }
+                                        )
 
-                                    SampleMealPill(
-                                        emoji = "🐟",
-                                        label = "Lax & potatis",
-                                        onClick = {
-                                            val bmp = BitmapFactory.decodeResource(context.resources, R.drawable.img_salmon_plate)
-                                            startImageProcessing(bmp, null)
-                                        }
-                                    )
+                                        SampleMealPill(
+                                            emoji = "🐟",
+                                            label = "Lax & potatis",
+                                            onClick = {
+                                                val bmp = BitmapFactory.decodeResource(context.resources, R.drawable.img_salmon_plate)
+                                                startImageProcessing(bmp, null)
+                                            }
+                                        )
 
-                                    SampleMealPill(
-                                        emoji = "🥣",
-                                        label = "Gröt & bär",
-                                        onClick = {
-                                            val bmp = BitmapFactory.decodeResource(context.resources, R.drawable.img_oatmeal_bowl)
-                                            startImageProcessing(bmp, null)
-                                        }
-                                    )
+                                        SampleMealPill(
+                                            emoji = "🥣",
+                                            label = "Gröt & bär",
+                                            onClick = {
+                                                val bmp = BitmapFactory.decodeResource(context.resources, R.drawable.img_oatmeal_bowl)
+                                                startImageProcessing(bmp, null)
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -972,12 +1073,7 @@ fun FoodScannerScreen(
                                     .clip(CircleShape)
                                     .background(Color.White)
                                     .clickable {
-                                        if (scanMode == 1) {
-                                            // Trigger photo capture and analyze for barcode or fallback to photo analysis
-                                            takePhoto()
-                                        } else {
-                                            takePhoto()
-                                        }
+                                        takePhoto()
                                     }
                                     .testTag("camera_shutter_button"),
                                 contentAlignment = Alignment.Center
@@ -989,10 +1085,16 @@ fun FoodScannerScreen(
                                         .background(EmeraldPrimary),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    if (scanMode == 1) {
-                                        Icon(
+                                    when (scanMode) {
+                                        1 -> Icon(
                                             imageVector = Icons.Default.QrCodeScanner,
                                             contentDescription = "Skanna streckkod",
+                                            tint = Color.Black,
+                                            modifier = Modifier.size(30.dp)
+                                        )
+                                        2 -> Icon(
+                                            imageVector = Icons.Default.ReceiptLong,
+                                            contentDescription = "Fota näringstabell",
                                             tint = Color.Black,
                                             modifier = Modifier.size(30.dp)
                                         )
@@ -1061,88 +1163,137 @@ fun FoodScannerScreen(
                             lineHeight = 18.sp
                         )
 
-                        Text(
-                            text = "Välj vad du fotograferade för att logga direkt med exakta näringsvärden:",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center
-                        )
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
+                        if (scanMode == 1 || detectedBarcode != null) {
                             Button(
                                 onClick = {
-                                    onAnalysisCompleted(aiNutritionService.getSmartFallbackAnalysis("äpple"), "")
+                                    scanMode = 2
+                                    errorMessage = null
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary, contentColor = Color.Black),
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.weight(1f)
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .testTag("scan_nutrition_label_fallback_button")
                             ) {
-                                Text("🍎 Äpple", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
-
-                            Button(
-                                onClick = {
-                                    onAnalysisCompleted(aiNutritionService.getSmartFallbackAnalysis("banan"), "")
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary, contentColor = Color.Black),
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("🍌 Banan", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
-
-                            Button(
-                                onClick = {
-                                    onAnalysisCompleted(aiNutritionService.getSmartFallbackAnalysis("smörgås"), "")
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary, contentColor = Color.Black),
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("🥪 Macka", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Icon(Icons.Default.ReceiptLong, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Fota baksidans näringsdeklaration", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                             }
                         }
 
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Button(
-                                onClick = {
-                                    onAnalysisCompleted(aiNutritionService.getSmartFallbackAnalysis("sallad"), "")
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onSurfaceVariant),
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.weight(1f)
+                        if (scanMode != 2) {
+                            Text(
+                                text = "Välj vad du fotograferade för att logga direkt med exakta näringsvärden:",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Text("🥗 Sallad", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Button(
+                                    onClick = {
+                                        onAnalysisCompleted(aiNutritionService.getSmartFallbackAnalysis("äpple"), "")
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary, contentColor = Color.Black),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("🍎 Äpple", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+
+                                Button(
+                                    onClick = {
+                                        onAnalysisCompleted(aiNutritionService.getSmartFallbackAnalysis("banan"), "")
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary, contentColor = Color.Black),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("🍌 Banan", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+
+                                Button(
+                                    onClick = {
+                                        onAnalysisCompleted(aiNutritionService.getSmartFallbackAnalysis("smörgås"), "")
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary, contentColor = Color.Black),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("🥪 Macka", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
                             }
 
-                            Button(
-                                onClick = {
-                                    onAnalysisCompleted(aiNutritionService.getSmartFallbackAnalysis("lax"), "")
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onSurfaceVariant),
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.weight(1f)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Text("🍲 Varmrätt", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
+                                Button(
+                                    onClick = {
+                                        onAnalysisCompleted(aiNutritionService.getSmartFallbackAnalysis("sallad"), "")
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onSurfaceVariant),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("🥗 Sallad", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
 
-                            Button(
-                                onClick = {
-                                    errorMessage = null
-                                    onManualSearchRequested()
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer),
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.weight(1f)
+                                Button(
+                                    onClick = {
+                                        onAnalysisCompleted(aiNutritionService.getSmartFallbackAnalysis("lax"), "")
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onSurfaceVariant),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("🍲 Varmrätt", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+
+                                Button(
+                                    onClick = {
+                                        errorMessage = null
+                                        onManualSearchRequested()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("🔍 Sök", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        } else {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Text("🔍 Sök", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Button(
+                                    onClick = {
+                                        errorMessage = null
+                                        galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary, contentColor = Color.Black),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("🖼️ Välj bild", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Button(
+                                    onClick = {
+                                        errorMessage = null
+                                        onManualSearchRequested()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("🔍 Sök manuellt", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
 
@@ -1158,8 +1309,9 @@ fun FoodScannerScreen(
             }
         }
 
-        // Live Barcode Portion & Serving Size Editor Sheet
+        // Live Barcode or Nutrition Label Portion & Serving Size Editor Sheet
         scannedFoodEntry?.let { entry ->
+            val isNutritionLabel = entry.id.startsWith("label_") || entry.category.contains("Näringsdeklaration", ignoreCase = true)
             val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
             var amountGramsText by remember(entry) {
                 mutableStateOf(entry.standardPortionGrams.coerceAtLeast(10).toString())
@@ -1198,14 +1350,14 @@ fun FoodScannerScreen(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.QrCodeScanner,
+                                        imageVector = if (isNutritionLabel) Icons.Default.ReceiptLong else Icons.Default.QrCodeScanner,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.size(13.dp)
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        text = "Streckkod avläst",
+                                        text = if (isNutritionLabel) "Näringstabell avläst (OCR)" else "Streckkod avläst",
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.primary
@@ -1219,10 +1371,15 @@ fun FoodScannerScreen(
                                 fontWeight = FontWeight.ExtraBold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
+                            Text(
+                                text = "Per 100g: ${entry.caloriesPer100g} kcal • P ${formatMacroDecimal(entry.proteinPer100g)}g • K ${formatMacroDecimal(entry.carbsPer100g)}g • F ${formatMacroDecimal(entry.fatPer100g)}g",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                             if (entry.category.isNotBlank()) {
                                 Text(
                                     text = entry.category,
-                                    fontSize = 12.sp,
+                                    fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
@@ -1351,10 +1508,20 @@ fun FoodScannerScreen(
                     Button(
                         onClick = {
                             val finalIngredient = entry.toIngredient(currentGrams)
+                            val sourceReasoning = when {
+                                isNutritionLabel && !detectedBarcode.isNullOrBlank() ->
+                                    "Avläst från förpackningens näringsdeklaration (kopplad till streckkod $detectedBarcode) med ${currentGrams}g portion."
+                                isNutritionLabel ->
+                                    "Avläst från förpackningens näringsdeklaration med ${currentGrams}g portion."
+                                !detectedBarcode.isNullOrBlank() ->
+                                    "Identifierad via streckkod ($detectedBarcode). Hämtad från livsmedelsdatabas med ${currentGrams}g portion."
+                                else ->
+                                    "Hämtad från produktdatabas med ${currentGrams}g portion."
+                            }
                             val analysis = AiMealAnalysisResult(
                                 mealName = entry.displayName,
                                 confidence = "high",
-                                reasoning = "Identifierad via streckkod ($detectedBarcode). Hämtad från livsmedelsdatabas med ${currentGrams}g portion.",
+                                reasoning = sourceReasoning,
                                 totalCalories = finalIngredient.calories,
                                 totalProteinG = finalIngredient.protein,
                                 totalCarbsG = finalIngredient.carbs,
@@ -1568,6 +1735,40 @@ private fun PlateFramingOverlay(
                     end = Offset(left + rectWidth - 10f, laserY),
                     strokeWidth = 3f
                 )
+            } else if (scanMode == 2) {
+                // Nutrition Table OCR Mode: Tall vertical card reticle
+                val rectWidth = canvasWidth * 0.78f
+                val rectHeight = minOf(rectWidth * 1.18f, canvasHeight * 0.50f)
+                val left = (canvasWidth - rectWidth) / 2f
+                val top = (canvasHeight - rectHeight) / 2f - 36f
+
+                val cornerLength = 34f
+                val strokeWidth = 5.5f
+                val strokeColor = EmeraldPrimary.copy(alpha = pulseAlpha)
+
+                // Top-Left
+                drawLine(strokeColor, Offset(left, top), Offset(left + cornerLength, top), strokeWidth)
+                drawLine(strokeColor, Offset(left, top), Offset(left, top + cornerLength), strokeWidth)
+                // Top-Right
+                drawLine(strokeColor, Offset(left + rectWidth, top), Offset(left + rectWidth - cornerLength, top), strokeWidth)
+                drawLine(strokeColor, Offset(left + rectWidth, top), Offset(left + rectWidth, top + cornerLength), strokeWidth)
+                // Bottom-Left
+                drawLine(strokeColor, Offset(left, top + rectHeight), Offset(left + cornerLength, top + rectHeight), strokeWidth)
+                drawLine(strokeColor, Offset(left, top + rectHeight), Offset(left, top + rectHeight - cornerLength), strokeWidth)
+                // Bottom-Right
+                drawLine(strokeColor, Offset(left + rectWidth, top + rectHeight), Offset(left + rectWidth - cornerLength, top + rectHeight), strokeWidth)
+                drawLine(strokeColor, Offset(left + rectWidth, top + rectHeight), Offset(left + rectWidth, top + rectHeight - cornerLength), strokeWidth)
+
+                // Subtle dashed inner table guidelines
+                listOf(0.25f, 0.5f, 0.75f).forEach { yRatio ->
+                    drawLine(
+                        color = Color.White.copy(alpha = 0.22f),
+                        start = Offset(left + 14f, top + rectHeight * yRatio),
+                        end = Offset(left + rectWidth - 14f, top + rectHeight * yRatio),
+                        strokeWidth = 2f,
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 10f), 0f)
+                    )
+                }
             } else {
                 // Food Plate Mode: Square framing box with inner circle
                 val boxSize = minOf(canvasWidth * 0.82f, canvasHeight * 0.50f)
@@ -1611,13 +1812,21 @@ private fun PlateFramingOverlay(
         Surface(
             modifier = Modifier
                 .align(Alignment.Center)
-                .padding(top = if (scanMode == 1) 150.dp else 210.dp),
+                .padding(top = when (scanMode) {
+                    1 -> 150.dp
+                    2 -> 240.dp
+                    else -> 210.dp
+                }),
             shape = RoundedCornerShape(20.dp),
             color = Color.Black.copy(alpha = 0.75f),
             border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))
         ) {
             Text(
-                text = if (scanMode == 1) "Håll streckkoden i rutan så läses den av direkt" else "Rikta kameran mot tallriken",
+                text = when (scanMode) {
+                    1 -> "Håll streckkoden i rutan så läses den av direkt"
+                    2 -> "Rikta kameran mot baksidans näringstabell (per 100g)"
+                    else -> "Rikta kameran mot tallriken"
+                },
                 color = Color.White,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Medium,

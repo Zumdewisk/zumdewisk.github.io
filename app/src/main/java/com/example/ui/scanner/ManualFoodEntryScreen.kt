@@ -41,14 +41,19 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fastfood
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LocalDrink
+import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.LocalMall
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.Scale
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -74,6 +79,8 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -91,16 +98,20 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.local.AppDatabase
+import com.example.data.local.FavoritesManager
 import com.example.data.local.FoodItem
+import com.example.data.local.FrequentMealSummary
 import com.example.data.model.FoodEntryType
 import com.example.data.model.FoodIngredient
 import com.example.data.model.FoodUnit
 import com.example.data.model.MealItem
 import com.example.data.model.SwedishFoodDatabase
 import com.example.data.model.SwedishFoodEntry
+import com.example.data.repository.AiMealAnalysisResult
 import com.example.data.repository.AiNutritionService
 import com.example.ui.theme.EmeraldDark
 import com.example.ui.theme.EmeraldPrimary
@@ -116,14 +127,26 @@ fun ManualFoodEntryScreen(
     currentDate: String,
     initialMealType: String = "lunch",
     aiNutritionService: AiNutritionService? = null,
+    allMeals: List<MealItem> = emptyList(),
+    onVoiceMealAnalyzed: ((AiMealAnalysisResult, String) -> Unit)? = null,
     onSaveMeal: (MealItem) -> Unit,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
-    var selectedTab by remember { mutableIntStateOf(0) } // 0 = Sök, 1 = Eget livsmedel
+    LaunchedEffect(Unit) {
+        FavoritesManager.ensureLoaded(context)
+    }
+
+    val favoriteFoods by FavoritesManager.favorites.collectAsState()
+    val (frequentMeals, recentMeals) = remember(allMeals) {
+        FavoritesManager.computeFrequentAndRecentMeals(allMeals, maxFrequent = 15, maxRecent = 15)
+    }
+
+    var selectedTab by remember { mutableIntStateOf(0) } // 0 = Sök, 1 = Favoriter & Vanliga, 2 = Eget livsmedel
     var selectedMealType by remember { mutableStateOf(initialMealType) }
+    var showVoiceLogSheet by remember { mutableStateOf(false) }
 
     // Search and filter state
     var searchQuery by remember { mutableStateOf("") }
@@ -278,7 +301,7 @@ fun ManualFoodEntryScreen(
                 }
             }
 
-            // Tabs: Sök i databas vs Eget livsmedel
+            // Tabs: Sök vs Favoriter & Vanliga vs Eget
             item(key = "entry_mode_tabs") {
                 TabRow(
                     selectedTabIndex = selectedTab,
@@ -289,65 +312,100 @@ fun ManualFoodEntryScreen(
                     Tab(
                         selected = selectedTab == 0,
                         onClick = { selectedTab = 0 },
-                        text = { Text("Sök mat och varumärken", fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
+                        modifier = Modifier.testTag("tab_search_food"),
+                        text = { Text("Sök", fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
                     )
                     Tab(
                         selected = selectedTab == 1,
                         onClick = { selectedTab = 1 },
-                        text = { Text("Eget livsmedel", fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
+                        modifier = Modifier.testTag("tab_favorites_recent"),
+                        text = { Text("Favoriter & Vanliga", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
+                    )
+                    Tab(
+                        selected = selectedTab == 2,
+                        onClick = { selectedTab = 2 },
+                        modifier = Modifier.testTag("tab_custom_food"),
+                        text = { Text("Eget", fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
                     )
                 }
             }
 
             if (selectedTab == 0) {
-                // Search Input Field with IME Search action
+                // Search Input Field with Microphone button for Voice Meal Logging
                 item(key = "search_input_field") {
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = {
-                            searchQuery = it
-                            aiSearchMessage = null
-                            aiSearchIsError = false
-                        },
-                        placeholder = { Text("Sök vara, maträtt eller varumärke...") },
-                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                        trailingIcon = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (isAiSearching) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(18.dp),
-                                        strokeWidth = 2.dp,
-                                        color = Color(0xFF8B5CF6)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                }
-                                if (searchQuery.isNotEmpty()) {
-                                    IconButton(onClick = {
-                                        searchQuery = ""
-                                        aiSearchMessage = null
-                                        aiSearchIsError = false
-                                        latestAiResults = null
-                                        lastAutoSearchedQuery = ""
-                                    }) {
-                                        Icon(Icons.Default.Close, contentDescription = "Rensa")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = {
+                                searchQuery = it
+                                aiSearchMessage = null
+                                aiSearchIsError = false
+                            },
+                            placeholder = { Text("Sök vara, maträtt eller märke...", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                            trailingIcon = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (isAiSearching) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(18.dp),
+                                            strokeWidth = 2.dp,
+                                            color = Color(0xFF8B5CF6)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                    }
+                                    if (searchQuery.isNotEmpty()) {
+                                        IconButton(onClick = {
+                                            searchQuery = ""
+                                            aiSearchMessage = null
+                                            aiSearchIsError = false
+                                            latestAiResults = null
+                                            lastAutoSearchedQuery = ""
+                                        }) {
+                                            Icon(Icons.Default.Close, contentDescription = "Rensa")
+                                        }
                                     }
                                 }
+                            },
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Text,
+                                imeAction = ImeAction.Search
+                            ),
+                            keyboardActions = KeyboardActions(
+                                onSearch = { performGlobalAiSearch(searchQuery) }
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .focusRequester(searchFocusRequester)
+                                .testTag("food_search_input"),
+                            shape = RoundedCornerShape(14.dp),
+                            singleLine = true
+                        )
+
+                        if (aiNutritionService != null) {
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = EmeraldPrimary,
+                                modifier = Modifier
+                                    .size(54.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .clickable { showVoiceLogSheet = true }
+                                    .testTag("voice_log_mic_button")
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.Mic,
+                                        contentDescription = "Röstlogga måltid med AI",
+                                        tint = Color.Black,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
                             }
-                        },
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Text,
-                            imeAction = ImeAction.Search
-                        ),
-                        keyboardActions = KeyboardActions(
-                            onSearch = { performGlobalAiSearch(searchQuery) }
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .focusRequester(searchFocusRequester)
-                            .testTag("food_search_input"),
-                        shape = RoundedCornerShape(14.dp),
-                        singleLine = true
-                    )
+                        }
+                    }
                 }
 
                 // Sub-filter chips (FlowRow / wrap)
@@ -589,12 +647,75 @@ fun ManualFoodEntryScreen(
                     }
                 } else {
                     items(searchResults, key = { it.id }) { food ->
+                        val isFav = favoriteFoods.any {
+                            it.id == food.id ||
+                                FavoritesManager.normalizeFoodName(it.displayName) == FavoritesManager.normalizeFoodName(food.displayName)
+                        }
                         FoodResultCard(
                             food = food,
+                            isFavorite = isFav,
+                            onToggleFavorite = { FavoritesManager.toggleFavoriteFood(context, food) },
                             onClick = { foodForPortionConfig = food }
                         )
                     }
                 }
+            } else if (selectedTab == 1) {
+                // Favoriter, Vanligaste (Topp 15) & Senast loggade
+                favoritesAndRecentItems(
+                    favoriteFoods = favoriteFoods,
+                    frequentMeals = frequentMeals,
+                    recentMeals = recentMeals,
+                    selectedMealType = selectedMealType,
+                    currentDate = currentDate,
+                    onConfigureFood = { foodForPortionConfig = it },
+                    onQuickLogFood = { food ->
+                        val ing = food.toIngredient(food.standardPortionGrams.coerceAtLeast(1))
+                        val meal = MealItem(
+                            date = currentDate,
+                            mealType = selectedMealType,
+                            name = "${food.displayName} (1 portion (${ing.amountGrams} g))",
+                            calories = ing.calories,
+                            protein = ing.protein,
+                            carbs = ing.carbs,
+                            fat = ing.fat,
+                            fiber = ing.fiber,
+                            sugar = ing.sugar,
+                            salt = ing.salt,
+                            itemsJson = FoodIngredient.serializeList(listOf(ing)),
+                            aiAnalyzed = false
+                        )
+                        coroutineScope.launch {
+                            try {
+                                AppDatabase.getDatabase(context).foodItemDao().insert(FoodItem.fromMealItem(meal))
+                            } catch (_: Exception) {}
+                        }
+                        onSaveMeal(meal)
+                    },
+                    onToggleFavoriteFood = { food ->
+                        FavoritesManager.toggleFavoriteFood(context, food)
+                    },
+                    onQuickLogMeal = { sourceMeal ->
+                        val cloned = sourceMeal.copy(
+                            id = "",
+                            mealId = "",
+                            date = currentDate,
+                            mealType = selectedMealType,
+                            createdAt = null
+                        )
+                        coroutineScope.launch {
+                            try {
+                                AppDatabase.getDatabase(context).foodItemDao().insert(FoodItem.fromMealItem(cloned))
+                            } catch (_: Exception) {}
+                        }
+                        onSaveMeal(cloned)
+                    },
+                    onConfigureMeal = { sourceMeal ->
+                        foodForPortionConfig = FavoritesManager.mealToFoodEntry(sourceMeal)
+                    },
+                    onToggleFavoriteMeal = { sourceMeal ->
+                        FavoritesManager.toggleFavoriteMeal(context, sourceMeal)
+                    }
+                )
             } else {
                 // Custom food tab (inside the same unified LazyColumn for full-page scrolling)
                 customFoodEntryItems(
@@ -630,6 +751,37 @@ fun ManualFoodEntryScreen(
         }
     }
 
+    // Voice Meal Logging Modal Bottom Sheet
+    if (showVoiceLogSheet && aiNutritionService != null) {
+        VoiceMealLogSheet(
+            aiNutritionService = aiNutritionService,
+            initialMealType = selectedMealType,
+            onDismiss = { showVoiceLogSheet = false },
+            onMealAnalyzed = { analysis, chosenMealType ->
+                showVoiceLogSheet = false
+                if (onVoiceMealAnalyzed != null) {
+                    onVoiceMealAnalyzed(analysis, chosenMealType)
+                } else {
+                    val meal = MealItem(
+                        date = currentDate,
+                        mealType = chosenMealType,
+                        name = analysis.mealName,
+                        calories = analysis.totalCalories,
+                        protein = analysis.totalProteinG,
+                        carbs = analysis.totalCarbsG,
+                        fat = analysis.totalFatG,
+                        fiber = analysis.totalFiberG,
+                        sugar = analysis.totalSugarG,
+                        salt = analysis.totalSaltG,
+                        itemsJson = FoodIngredient.serializeList(analysis.items),
+                        aiAnalyzed = true
+                    )
+                    onSaveMeal(meal)
+                }
+            }
+        )
+    }
+
     // Modal Bottom Sheet / Inspector for Portion and Quantity Selection
     if (foodForPortionConfig != null) {
         PortionQuantityConfigSheet(
@@ -656,6 +808,8 @@ fun ManualFoodEntryScreen(
 @Composable
 private fun FoodResultCard(
     food: SwedishFoodEntry,
+    isFavorite: Boolean = false,
+    onToggleFavorite: () -> Unit = {},
     onClick: () -> Unit
 ) {
     Card(
@@ -674,7 +828,11 @@ private fun FoodResultCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // Type & Brand Pills
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     // Type Badge
                     Surface(
                         shape = RoundedCornerShape(8.dp),
@@ -713,20 +871,37 @@ private fun FoodResultCard(
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                             )
                         }
                     }
                 }
 
-                // Calories per 100g or 100ml
+                // Calories per 100g or 100ml + Favorite toggle
                 val unitLabel = if (food.itemType == FoodEntryType.DRINK) "100ml" else "100g"
-                Text(
-                    text = "${food.caloriesPer100g} kcal/$unitLabel",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "${food.caloriesPer100g} kcal/$unitLabel",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    IconButton(
+                        onClick = onToggleFavorite,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("favorite_toggle_${food.id}")
+                    ) {
+                        Icon(
+                            imageVector = if (isFavorite) Icons.Filled.Star else Icons.Outlined.StarOutline,
+                            contentDescription = if (isFavorite) "Ta bort från favoriter" else "Spara som favorit",
+                            tint = if (isFavorite) Color(0xFFF59E0B) else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(6.dp))
@@ -1518,6 +1693,325 @@ private fun LazyListScope.customFoodEntryItems(
             Icon(Icons.Default.Check, contentDescription = null)
             Spacer(modifier = Modifier.width(8.dp))
             Text("Spara i matdagboken", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+        }
+    }
+}
+
+/**
+ * Tab content for "Favoriter & Vanliga" inside the unified LazyColumn:
+ * - User-starred Favorites (with 1-tap logging or portion edit)
+ * - Top 15 Most Frequently Logged Meals/Foods
+ * - Recent Unique Logged Meals
+ */
+private fun LazyListScope.favoritesAndRecentItems(
+    favoriteFoods: List<SwedishFoodEntry>,
+    frequentMeals: List<FrequentMealSummary>,
+    recentMeals: List<MealItem>,
+    selectedMealType: String,
+    currentDate: String,
+    onConfigureFood: (SwedishFoodEntry) -> Unit,
+    onQuickLogFood: (SwedishFoodEntry) -> Unit,
+    onToggleFavoriteFood: (SwedishFoodEntry) -> Unit,
+    onQuickLogMeal: (MealItem) -> Unit,
+    onConfigureMeal: (MealItem) -> Unit,
+    onToggleFavoriteMeal: (MealItem) -> Unit
+) {
+    // 1. Pinned Favorites Header
+    item(key = "fav_header") {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Star,
+                contentDescription = null,
+                tint = Color(0xFFF59E0B),
+                modifier = Modifier.size(18.dp)
+            )
+            Text(
+                text = "Dina favoriter (${favoriteFoods.size})",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+
+    if (favoriteFoods.isEmpty()) {
+        item(key = "fav_empty") {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+            ) {
+                Text(
+                    text = "Tryck på stjärnan på ett livsmedel eller en vanlig måltid för att spara dina vardagsfavoriter här för 1-trycksloggning.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(14.dp)
+                )
+            }
+        }
+    } else {
+        items(favoriteFoods, key = { "fav_${it.id}" }) { food ->
+            val stdIng = remember(food) { food.toIngredient(food.standardPortionGrams.coerceAtLeast(1)) }
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onConfigureFood(food) }
+                    .testTag("favorite_food_card_${food.id}"),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.35f))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 12.dp, top = 10.dp, bottom = 10.dp, end = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = { onToggleFavoriteFood(food) },
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Star,
+                            contentDescription = "Ta bort favorit",
+                            tint = Color(0xFFF59E0B)
+                        )
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = food.displayName,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "${food.standardPortionDescription} • ${stdIng.calories} kcal • P ${formatMacroDecimal(stdIng.protein)}g",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = { onQuickLogFood(food) },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = EmeraldPrimary,
+                            contentColor = Color.Black
+                        ),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        modifier = Modifier
+                            .height(48.dp)
+                            .testTag("quick_log_favorite_${food.id}")
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Logga", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Top 15 Frequent Foods / Meals Header
+    item(key = "freq_header") {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.LocalFireDepartment,
+                contentDescription = null,
+                tint = EmeraldPrimary,
+                modifier = Modifier.size(18.dp)
+            )
+            Text(
+                text = "Dina vanligaste (Topp ${frequentMeals.size.coerceAtLeast(0)})",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+
+    if (frequentMeals.isEmpty()) {
+        item(key = "freq_empty") {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+            ) {
+                Text(
+                    text = "Här visas automatiskt dina 15 vanligaste rätter och livsmedel när du börjat logga måltider.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(14.dp)
+                )
+            }
+        }
+    } else {
+        items(frequentMeals.size, key = { idx -> "freq_${frequentMeals[idx].canonicalKey}" }) { idx ->
+            val summary = frequentMeals[idx]
+            val meal = summary.latestMeal
+            val favFoodsSnapshot by FavoritesManager.favorites.collectAsState()
+            val isFav = remember(favFoodsSnapshot, meal.name) {
+                val key = FavoritesManager.normalizeFoodName(meal.name)
+                favFoodsSnapshot.any { FavoritesManager.normalizeFoodName(it.displayName) == key }
+            }
+            FrequentOrRecentMealCard(
+                title = summary.displayName,
+                subtitle = "${meal.calories} kcal • P ${formatMacroDecimal(meal.protein)}g • K ${formatMacroDecimal(meal.carbs)}g • F ${formatMacroDecimal(meal.fat)}g",
+                badgeText = "${summary.count}x",
+                isFavorite = isFav,
+                quickLogTag = "quick_log_frequent_$idx",
+                onToggleFavorite = { onToggleFavoriteMeal(meal) },
+                onCardClick = { onConfigureMeal(meal) },
+                onQuickLog = { onQuickLogMeal(meal) }
+            )
+        }
+    }
+
+    // 3. Recent Logged Meals Header
+    if (recentMeals.isNotEmpty()) {
+        item(key = "recent_header") {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.History,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp)
+                )
+                Text(
+                    text = "Senast loggade",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        items(recentMeals.size, key = { idx -> "recent_${idx}_${recentMeals[idx].id}_${recentMeals[idx].name}" }) { idx ->
+            val meal = recentMeals[idx]
+            val favFoodsSnapshot by FavoritesManager.favorites.collectAsState()
+            val isFav = remember(favFoodsSnapshot, meal.name) {
+                val key = FavoritesManager.normalizeFoodName(meal.name)
+                favFoodsSnapshot.any { FavoritesManager.normalizeFoodName(it.displayName) == key }
+            }
+            FrequentOrRecentMealCard(
+                title = FavoritesManager.stripPortionSuffix(meal.name).ifBlank { meal.name },
+                subtitle = "${meal.date} • ${meal.calories} kcal • P ${formatMacroDecimal(meal.protein)}g • K ${formatMacroDecimal(meal.carbs)}g",
+                badgeText = null,
+                isFavorite = isFav,
+                quickLogTag = "quick_log_recent_$idx",
+                onToggleFavorite = { onToggleFavoriteMeal(meal) },
+                onCardClick = { onConfigureMeal(meal) },
+                onQuickLog = { onQuickLogMeal(meal) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun FrequentOrRecentMealCard(
+    title: String,
+    subtitle: String,
+    badgeText: String?,
+    isFavorite: Boolean,
+    quickLogTag: String,
+    onToggleFavorite: () -> Unit,
+    onCardClick: () -> Unit,
+    onQuickLog: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCardClick() },
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 6.dp, top = 8.dp, bottom = 8.dp, end = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(
+                onClick = onToggleFavorite,
+                modifier = Modifier.size(48.dp)
+            ) {
+                Icon(
+                    imageVector = if (isFavorite) Icons.Filled.Star else Icons.Outlined.StarOutline,
+                    contentDescription = if (isFavorite) "Ta bort favorit" else "Spara som favorit",
+                    tint = if (isFavorite) Color(0xFFF59E0B) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = title,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    if (!badgeText.isNullOrBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = EmeraldPrimary.copy(alpha = 0.16f)
+                        ) {
+                            Text(
+                                text = badgeText,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = EmeraldDark,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = subtitle,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            OutlinedButton(
+                onClick = onQuickLog,
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                border = BorderStroke(1.dp, EmeraldPrimary.copy(alpha = 0.7f)),
+                modifier = Modifier
+                    .height(48.dp)
+                    .testTag(quickLogTag)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(3.dp))
+                Text("Logga", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, maxLines = 1, softWrap = false)
+            }
         }
     }
 }

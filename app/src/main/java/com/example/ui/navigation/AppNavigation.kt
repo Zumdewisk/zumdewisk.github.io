@@ -110,6 +110,7 @@ fun AppNavigation(
     }
     var selectedDateObj by remember { mutableStateOf(LocalDate.now()) }
     val selectedDateStr = remember(selectedDateObj) { selectedDateObj.format(dateFormatter) }
+    val previousDateStr = remember(selectedDateObj) { selectedDateObj.minusDays(1).format(dateFormatter) }
 
     val formattedDisplayDate = remember(selectedDateObj) {
         val today = LocalDate.now()
@@ -243,6 +244,17 @@ fun AppNavigation(
             currentScreen = Screen.Dashboard
         }
         mealEntryOriginScreen = Screen.Dashboard
+    }
+
+    val openVoiceMealReview: (AiMealAnalysisResult, String) -> Unit = { analysis, chosenMealType ->
+        selectedMealCategoryForAdd = chosenMealType
+        pendingAnalysisResult = analysis
+        pendingMealImageUrl = ""
+        AiNutritionService.lastAnalysisResult = analysis
+        AiNutritionService.lastImageUrl = ""
+        autoLaunchCamera = false
+        autoLaunchGallery = false
+        currentScreen = Screen.AnalysisReview
     }
 
     // Initialize initial user profile if non-existent
@@ -601,7 +613,32 @@ fun AppNavigation(
                             }
                         },
                         focusCategory = diaryFocusCategory,
-                        focusTrigger = diaryFocusTrigger
+                        focusTrigger = diaryFocusTrigger,
+                        allMeals = allMeals,
+                        previousDateStr = previousDateStr,
+                        onCopyMealsBatch = { mealsToCopy, targetDate, label ->
+                            coroutineScope.launch {
+                                val copies = mealsToCopy.map {
+                                    it.copy(
+                                        id = "",
+                                        mealId = "",
+                                        date = targetDate,
+                                        createdAt = null,
+                                        updatedAt = null
+                                    )
+                                }
+                                val res = repository.addMealsBatch(copies)
+                                if (res.isSuccess) {
+                                    snackbarHostState.showSnackbar("$label (${copies.size} st) kopierades!")
+                                } else {
+                                    snackbarHostState.showSnackbar("Kunde inte kopiera måltider: ${res.exceptionOrNull()?.localizedMessage ?: "Okänt fel"}")
+                                }
+                            }
+                        },
+                        onVoiceMealAnalyzed = { analysis, chosenMealType ->
+                            mealEntryOriginScreen = Screen.Diary
+                            openVoiceMealReview(analysis, chosenMealType)
+                        }
                     )
                 }
 
@@ -875,6 +912,8 @@ fun AppNavigation(
                         aiNutritionService = effectiveAiNutritionService,
                         currentDate = selectedDateStr,
                         initialMealType = selectedMealCategoryForAdd,
+                        allMeals = allMeals,
+                        onVoiceMealAnalyzed = openVoiceMealReview,
                         onSaveMeal = { meal ->
                             coroutineScope.launch {
                                 repository.addMeal(meal)

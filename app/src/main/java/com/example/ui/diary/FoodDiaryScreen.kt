@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
@@ -35,11 +36,15 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DinnerDining
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.WbSunny
+import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -63,6 +68,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -76,6 +82,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -83,11 +90,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.example.data.local.FavoritesManager
 import com.example.data.model.AiFoodCorrection
 import com.example.data.model.FoodIngredient
 import com.example.data.model.MealItem
+import com.example.data.repository.AiMealAnalysisResult
 import com.example.data.repository.AiNutritionService
 import com.example.ui.scanner.AiCorrectionSheet
+import com.example.ui.scanner.VoiceMealLogSheet
 import com.example.ui.theme.EmeraldDark
 import com.example.ui.theme.EmeraldPrimary
 import com.example.ui.theme.MacroCarbs
@@ -114,12 +124,25 @@ fun FoodDiaryScreen(
     onCorrectionLearned: (AiFoodCorrection) -> Unit = {},
     onDeleteLearnedRule: (String) -> Unit = {},
     focusCategory: String? = null,
-    focusTrigger: Int = 0
+    focusTrigger: Int = 0,
+    allMeals: List<MealItem> = emptyList(),
+    previousDateStr: String = "",
+    onCopyMealsBatch: (List<MealItem>, String, String) -> Unit = { batch, targetDate, _ ->
+        batch.forEach { onCopyMeal(it, targetDate) }
+    },
+    onVoiceMealAnalyzed: ((AiMealAnalysisResult, String) -> Unit)? = null
 ) {
+    val context = LocalContext.current
+    LaunchedEffect(Unit) {
+        FavoritesManager.ensureLoaded(context)
+    }
+    val favoriteFoods by FavoritesManager.favorites.collectAsState()
+
     var mealToDelete by remember { mutableStateOf<MealItem?>(null) }
     var mealToEdit by remember { mutableStateOf<MealItem?>(null) }
     var mealToCorrectWithAi by remember { mutableStateOf<MealItem?>(null) }
     var selectedCategoryForAdd by remember { mutableStateOf<String?>(null) }
+    var voiceCategoryForSheet by remember { mutableStateOf<String?>(null) }
     var highlightedCategory by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
 
@@ -131,12 +154,27 @@ fun FoodDiaryScreen(
         Triple("ovrigt", "Övrigt", Icons.Default.Restaurant to EmeraldDark)
     )
 
-    LaunchedEffect(focusTrigger, focusCategory) {
+    val yesterdayMeals = remember(allMeals, previousDateStr) {
+        if (previousDateStr.isBlank()) emptyList() else allMeals.filter { it.date == previousDateStr }
+    }
+    val yesterdayBreakfast = remember(yesterdayMeals) {
+        yesterdayMeals.filter { it.mealType == "frukost" }
+    }
+    val recurringMeals = remember(allMeals, meals) {
+        val (frequent, _) = FavoritesManager.computeFrequentAndRecentMeals(allMeals, maxFrequent = 10, maxRecent = 10)
+        val todayNames = meals.map { FavoritesManager.normalizeFoodName(it.name) }.toHashSet()
+        frequent
+            .filter { it.latestMeal.date != currentDate || !todayNames.contains(it.canonicalKey) }
+            .take(6)
+    }
+    val showEatAgainSection = yesterdayMeals.isNotEmpty() || recurringMeals.isNotEmpty()
+
+    LaunchedEffect(focusTrigger, focusCategory, showEatAgainSection) {
         if (focusTrigger > 0 && !focusCategory.isNullOrBlank()) {
             val catIndex = categories.indexOfFirst { it.first == focusCategory }
             if (catIndex >= 0) {
-                // Items 0 and 1 are Date Switcher and Daily Total Summary Card
-                listState.animateScrollToItem(2 + catIndex)
+                val headerCount = if (showEatAgainSection) 3 else 2
+                listState.animateScrollToItem(headerCount + catIndex)
                 highlightedCategory = focusCategory
                 delay(1800L)
                 highlightedCategory = null
@@ -260,9 +298,159 @@ fun FoodDiaryScreen(
                 }
             }
 
+            // Quick "Ät igen & Gårdagens måltider" 1-tap Card
+            if (showEatAgainSection) {
+                item(key = "eat_again_section") {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("eat_again_section"),
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, EmeraldPrimary.copy(alpha = 0.28f))
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Replay,
+                                    contentDescription = null,
+                                    tint = EmeraldPrimary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = "Ät igen • Snabbkopiera",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+
+                            if (yesterdayBreakfast.isNotEmpty() || yesterdayMeals.isNotEmpty()) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    if (yesterdayBreakfast.isNotEmpty()) {
+                                        val bKcal = yesterdayBreakfast.sumOf { it.calories }
+                                        Button(
+                                            onClick = {
+                                                onCopyMealsBatch(yesterdayBreakfast, currentDate, "Gårdagens frukost")
+                                            },
+                                            shape = RoundedCornerShape(12.dp),
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = EmeraldPrimary,
+                                                contentColor = Color.Black
+                                            ),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                            modifier = Modifier
+                                                .height(48.dp)
+                                                .testTag("copy_yesterday_breakfast_button")
+                                        ) {
+                                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(15.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "Kopiera gårdagens frukost ($bKcal kcal)",
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 1,
+                                                softWrap = false
+                                            )
+                                        }
+                                    }
+
+                                    if (yesterdayMeals.size > yesterdayBreakfast.size) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                onCopyMealsBatch(yesterdayMeals, currentDate, "Gårdagens måltider")
+                                            },
+                                            shape = RoundedCornerShape(12.dp),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                            border = BorderStroke(1.dp, EmeraldPrimary.copy(alpha = 0.6f)),
+                                            modifier = Modifier
+                                                .height(48.dp)
+                                                .testTag("copy_yesterday_all_button")
+                                        ) {
+                                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(15.dp), tint = MaterialTheme.colorScheme.primary)
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "Kopiera hela gårdagen (${yesterdayMeals.size} st)",
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                maxLines = 1,
+                                                softWrap = false
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (recurringMeals.isNotEmpty()) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    recurringMeals.forEachIndexed { idx, summary ->
+                                        val sample = summary.latestMeal
+                                        Surface(
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .clickable { onCopyMeal(sample, currentDate) }
+                                                .testTag("eat_again_chip_$idx")
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Add,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                                Text(
+                                                    text = "${summary.displayName} • ${sample.calories} kcal",
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                if (summary.count > 1) {
+                                                    Text(
+                                                        text = "(${summary.count}x)",
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.primary
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Categories
             categories.forEach { (catKey, catTitle, iconAndAccent) ->
                 val categoryMeals = meals.filter { it.mealType == catKey }
+                val yesterdayCategoryMeals = yesterdayMeals.filter { it.mealType == catKey }
                 val catCalories = categoryMeals.sumOf { it.calories }
 
                 item(key = "cat_$catKey") {
@@ -273,6 +461,11 @@ fun FoodDiaryScreen(
                         accentColor = iconAndAccent.second,
                         calories = catCalories,
                         meals = categoryMeals,
+                        yesterdayCategoryMeals = yesterdayCategoryMeals,
+                        onCopyYesterdayCategory = if (yesterdayCategoryMeals.isNotEmpty()) {
+                            { onCopyMealsBatch(yesterdayCategoryMeals, currentDate, "Gårdagens ${catTitle.lowercase()}") }
+                        } else null,
+                        favoriteFoods = favoriteFoods,
                         isHighlighted = highlightedCategory == catKey,
                         onAddClicked = { selectedCategoryForAdd = catKey },
                         onEditMeal = { mealToEdit = it },
@@ -280,7 +473,8 @@ fun FoodDiaryScreen(
                             { mealToCorrectWithAi = it }
                         } else null,
                         onDeleteMeal = { mealToDelete = it },
-                        onCopyMeal = { onCopyMeal(it, currentDate) }
+                        onCopyMeal = { onCopyMeal(it, currentDate) },
+                        onToggleFavoriteMeal = { FavoritesManager.toggleFavoriteMeal(context, it) }
                     )
                 }
             }
@@ -380,8 +574,78 @@ fun FoodDiaryScreen(
                     }
                 }
 
+                if (aiNutritionService != null) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .clickable {
+                                val cat = category
+                                selectedCategoryForAdd = null
+                                voiceCategoryForSheet = cat
+                            }
+                            .testTag("diary_add_voice_button"),
+                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f),
+                        border = BorderStroke(1.dp, EmeraldPrimary.copy(alpha = 0.35f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(CircleShape)
+                                    .background(EmeraldPrimary.copy(alpha = 0.2f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.Mic, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            }
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Column {
+                                Text("Röstlogga med AI", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                Text("Säg vad du åt, t.ex. två ägg, rågbröd och kaffe", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(10.dp))
             }
+        }
+    }
+
+    // Voice Meal Logging Bottom Sheet from Diary
+    voiceCategoryForSheet?.let { voiceCat ->
+        val service = aiNutritionService
+        if (service != null) {
+            VoiceMealLogSheet(
+                aiNutritionService = service,
+                initialMealType = voiceCat,
+                onDismiss = { voiceCategoryForSheet = null },
+                onMealAnalyzed = { analysis, chosenMealType ->
+                    voiceCategoryForSheet = null
+                    if (onVoiceMealAnalyzed != null) {
+                        onVoiceMealAnalyzed(analysis, chosenMealType)
+                    } else {
+                        val newMeal = MealItem(
+                            date = currentDate,
+                            mealType = chosenMealType,
+                            name = analysis.mealName,
+                            calories = analysis.totalCalories,
+                            protein = analysis.totalProteinG,
+                            carbs = analysis.totalCarbsG,
+                            fat = analysis.totalFatG,
+                            fiber = analysis.totalFiberG,
+                            sugar = analysis.totalSugarG,
+                            salt = analysis.totalSaltG,
+                            itemsJson = FoodIngredient.serializeList(analysis.items),
+                            aiAnalyzed = true
+                        )
+                        onCopyMeal(newMeal, currentDate)
+                    }
+                }
+            )
         }
     }
 
@@ -810,12 +1074,16 @@ private fun MealCategoryDiarySection(
     accentColor: Color,
     calories: Int,
     meals: List<MealItem>,
+    yesterdayCategoryMeals: List<MealItem> = emptyList(),
+    onCopyYesterdayCategory: (() -> Unit)? = null,
+    favoriteFoods: List<com.example.data.model.SwedishFoodEntry> = emptyList(),
     isHighlighted: Boolean = false,
     onAddClicked: () -> Unit,
     onEditMeal: (MealItem) -> Unit,
     onCorrectWithAi: ((MealItem) -> Unit)? = null,
     onDeleteMeal: (MealItem) -> Unit,
-    onCopyMeal: (MealItem) -> Unit
+    onCopyMeal: (MealItem) -> Unit,
+    onToggleFavoriteMeal: (MealItem) -> Unit = {}
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -893,18 +1161,52 @@ private fun MealCategoryDiarySection(
                 }
             }
 
-            if (meals.isNotEmpty()) {
+            if (meals.isEmpty() && yesterdayCategoryMeals.isNotEmpty() && onCopyYesterdayCategory != null) {
+                val yesterdayKcal = yesterdayCategoryMeals.sumOf { it.calories }
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = onCopyYesterdayCategory,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, EmeraldPrimary.copy(alpha = 0.45f)),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("copy_yesterday_${categoryKey}_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ContentCopy,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Kopiera gårdagens ${title.lowercase()} ($yesterdayKcal kcal)",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            } else if (meals.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(10.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     meals.forEach { meal ->
+                        val isFav = favoriteFoods.any {
+                            FavoritesManager.normalizeFoodName(it.displayName) == FavoritesManager.normalizeFoodName(meal.name)
+                        }
                         MealEntryRow(
                             meal = meal,
+                            isFavorite = isFav,
                             onEdit = { onEditMeal(meal) },
                             onCorrectWithAi = if (onCorrectWithAi != null) {
                                 { onCorrectWithAi(meal) }
                             } else null,
                             onDelete = { onDeleteMeal(meal) },
-                            onCopy = { onCopyMeal(meal) }
+                            onCopy = { onCopyMeal(meal) },
+                            onToggleFavorite = { onToggleFavoriteMeal(meal) }
                         )
                     }
                 }
@@ -916,10 +1218,12 @@ private fun MealCategoryDiarySection(
 @Composable
 private fun MealEntryRow(
     meal: MealItem,
+    isFavorite: Boolean = false,
     onEdit: () -> Unit,
     onCorrectWithAi: (() -> Unit)? = null,
     onDelete: () -> Unit,
-    onCopy: () -> Unit
+    onCopy: () -> Unit,
+    onToggleFavorite: () -> Unit = {}
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
@@ -1044,6 +1348,20 @@ private fun MealEntryRow(
                             onClick = {
                                 showMenu = false
                                 onEdit()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(if (isFavorite) "Ta bort från favoriter" else "Spara som favorit") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = if (isFavorite) Icons.Filled.Star else Icons.Outlined.StarOutline,
+                                    contentDescription = null,
+                                    tint = Color(0xFFF59E0B)
+                                )
+                            },
+                            onClick = {
+                                showMenu = false
+                                onToggleFavorite()
                             }
                         )
                         DropdownMenuItem(

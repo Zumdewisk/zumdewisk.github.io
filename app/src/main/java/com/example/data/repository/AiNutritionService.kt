@@ -404,6 +404,115 @@ class AiNutritionService {
         )
     }
 
+    // --- Voice Meal Logging (Röstloggning med AI) ---
+
+    private val spokenMealConfig = generationConfig {
+        responseMimeType = "application/json"
+        responseSchema = visionAnalysisSchema
+        temperature = 0.15f
+    }
+
+    private val spokenMealSystemPrompt = """
+        Du är en legitimerad svensk dietist och måltidsanalyserare i appen Zevra.
+        Användaren berättar muntligt på svenska vad hen precis har ätit eller druckit (t.ex. "Två stekta ägg, en skiva rågbröd med smör och en kopp svart kaffe").
+
+        REGLER:
+        1. Språk & namn: Skriv alltid alla rätter, livsmedel och förklaringar på naturlig svenska.
+        2. Uppdelning: Dela upp VARJE nämnt livsmedel, pålägg, sås, fettkälla (t.ex. smör/stekolja) och dryck som separata objekt i `items`.
+        3. Svenska portionsmått: Omvandla vardagliga uttryck exakt till realistiska gramvikter:
+           - 1 stekt/kokt ägg ≈ 55g (två ≈ 110g), 1 skiva rågbröd/formbröd ≈ 40–45g, smör på en smörgås ≈ 8–10g, 1 skiva ost ≈ 15g, 1 kopp kaffe ≈ 200g (ca 4 kcal), 1 glas mjölk/juice ≈ 250g, 1 dl havregryn ≈ 35g, 1 banan ≈ 120g.
+           - Om användaren redan anger gram/dl/msk, använd exakt den mängden.
+        4. Näringsvärden: Beräkna exakta och realistiska värden för kalorier (kcal), protein (g), kolhydrater (g) och fett (g) för varje ingrediens samt totalsumman.
+        5. Om texten inte beskriver någon mat eller dryck alls, returnera `items: []` och `dish_name: "Ingen mat identifierades"`.
+        6. Svara ENDAST med giltig JSON enligt det definierade schemat.
+    """.trimIndent()
+
+    private val spokenMealModel by lazy {
+        firebaseAi.generativeModel(
+            modelName = PRIMARY_MODEL_NAME,
+            generationConfig = spokenMealConfig,
+            systemInstruction = content {
+                text(spokenMealSystemPrompt)
+            }
+        )
+    }
+
+    private val spokenMealModelFallback by lazy {
+        firebaseAi.generativeModel(
+            modelName = FALLBACK_MODEL_NAME,
+            generationConfig = spokenMealConfig,
+            systemInstruction = content {
+                text(spokenMealSystemPrompt)
+            }
+        )
+    }
+
+    // --- Nutrition Label OCR / Vision (Scanna näringsdeklaration) ---
+
+    private val nutritionLabelSchema = Schema.obj(
+        properties = mapOf(
+            "table_status" to Schema.enumeration(
+                values = listOf("FOUND", "NOT_FOUND"),
+                description = "FOUND om bilden innehåller en läsbar näringstabell/näringsdeklaration, annars NOT_FOUND"
+            ),
+            "product_name" to Schema.string("Produktnamn på svenska om synligt på förpackningen, annars beskrivande namn som 'Scannad livsmedelsprodukt'"),
+            "brand" to Schema.string("Varumärke eller butiksmärke om synligt (t.ex. ICA, Garant, Arla, Pågen), annars tom sträng"),
+            "basis" to Schema.enumeration(
+                values = listOf("100g", "100ml"),
+                description = "Om tabellen anger värden per 100g eller per 100ml"
+            ),
+            "calories_per_100" to Schema.integer("Energi i kcal per 100g eller 100ml (om bara kJ anges, konvertera kJ / 4.184 till kcal)"),
+            "protein_per_100" to Schema.double("Protein i gram per 100g eller 100ml"),
+            "carbs_per_100" to Schema.double("Kolhydrater i gram per 100g eller 100ml"),
+            "fat_per_100" to Schema.double("Fett i gram per 100g eller 100ml"),
+            "fiber_per_100" to Schema.double("Fiber/kostfiber i gram per 100g eller 100ml (0.0 om ej angivet)"),
+            "sugar_per_100" to Schema.double("Varav sockerarter i gram per 100g eller 100ml (0.0 om ej angivet)"),
+            "salt_per_100" to Schema.double("Salt i gram per 100g eller 100ml (0.0 om ej angivet)"),
+            "standard_portion_grams" to Schema.integer("Normal portion i gram (om tabellen visar 'per portion', använd den vikten, annars 100)"),
+            "standard_portion_description" to Schema.string("T.ex. '1 portion (30 g)' eller '100 g'")
+        )
+    )
+
+    private val nutritionLabelConfig = generationConfig {
+        responseMimeType = "application/json"
+        responseSchema = nutritionLabelSchema
+        temperature = 0.1f
+    }
+
+    private val nutritionLabelSystemPrompt = """
+        Du är en expert på OCR och bildtolkning av svenska och internationella näringsdeklarationer på matförpackningar.
+
+        INSTRUKTIONER:
+        1. Läs av tabellen "Näringsvärde" / "Nutrition Facts" på bilden noggrant per 100 g eller per 100 ml.
+        2. Om både kJ och kcal står (t.ex. "1550 kJ / 370 kcal"), använd ALLTID kcal-värdet (370). Om endast kJ syns, räkna ut kcal = round(kJ / 4.184).
+        3. Konvertera europeiska decimaltecken (komma) korrekt till punkt-decimaltal i JSON (t.ex. "4,5 g" -> 4.5).
+        4. Läs ut: Energi (kcal), Fett, Kolhydrat, varav sockerarter, Fiber (om angivet), Protein och Salt.
+        5. Om tabellen dessutom visar en portionskolumn (t.ex. "Per portion 40 g"), ange den i `standard_portion_grams` och `standard_portion_description`.
+        6. Om produktnamn eller varumärke syns någonstans på bilden, fyll i `product_name` och `brand`. Om inget namn syns, ange ett tydligt svenskt namn t.ex. "Scannad vara (näringsdeklaration)".
+        7. Om bilden INTE visar någon läsbar näringstabell alls, sätt `table_status: "NOT_FOUND"`.
+        8. Svara ENDAST med giltig JSON enligt schemat.
+    """.trimIndent()
+
+    private val nutritionLabelModel by lazy {
+        firebaseAi.generativeModel(
+            modelName = PRIMARY_MODEL_NAME,
+            generationConfig = nutritionLabelConfig,
+            systemInstruction = content {
+                text(nutritionLabelSystemPrompt)
+            }
+        )
+    }
+
+    private val nutritionLabelModelFallback by lazy {
+        firebaseAi.generativeModel(
+            modelName = FALLBACK_MODEL_NAME,
+            generationConfig = nutritionLabelConfig,
+            systemInstruction = content {
+                text(nutritionLabelSystemPrompt)
+            }
+        )
+    }
+
     /**
      * Checks if the Firebase instance is ready and initialized.
      */
@@ -1747,6 +1856,180 @@ class AiNutritionService {
         } catch (e: Exception) {
             Log.e(TAG, "[MealCorrection AI] Både $PRIMARY_MODEL_NAME och $FALLBACK_MODEL_NAME misslyckades", e)
             Result.failure(toFriendlyCloudException(e, "AI-rättning"))
+        }
+    }
+
+    /**
+     * Parses a spoken Swedish meal description into structured ingredients, gram weights, calories, and macros.
+     * Uses gemini-3.5-flash-lite first and falls back to gemini-3.1-flash-lite on failure.
+     */
+    suspend fun parseSpokenMealDescription(
+        spokenText: String,
+        mealCategoryHint: String? = null
+    ): Result<AiMealAnalysisResult> {
+        val cleanText = spokenText.trim()
+        if (cleanText.isBlank()) {
+            return Result.failure(IllegalArgumentException("Säg eller skriv vad du åt först."))
+        }
+        if (!isFirebaseReady()) {
+            return Result.failure(IllegalStateException("Firebase är inte redo. Kontrollera internetanslutningen och försök igen."))
+        }
+
+        return try {
+            withTimeout(45_000L) {
+                val learnedRulesBlock = AiFoodCorrection.formatRulesForPrompt(learnedCorrections)
+                val prompt = buildString {
+                    appendLine("ANVÄNDARENS RÖSTBESKRIVNING AV MÅLTID:")
+                    appendLine("\"$cleanText\"")
+                    if (!mealCategoryHint.isNullOrBlank()) {
+                        appendLine("Måltidstyp: $mealCategoryHint")
+                    }
+                    if (learnedRulesBlock.isNotBlank()) {
+                        appendLine()
+                        appendLine(learnedRulesBlock)
+                    }
+                    appendLine()
+                    append("Dela upp allt användaren nämner i enskilda livsmedel med realistiska svenska gramvikter, kalorier och makron. Svara ENDAST med giltig JSON.")
+                }
+
+                val promptContent = content { text(prompt) }
+                val response = try {
+                    executeWithAppCheckRetry {
+                        spokenMealModel.generateContent(promptContent)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (primaryErr: Exception) {
+                    Log.w(TAG, "[Voice Meal AI] Primär modell ($PRIMARY_MODEL_NAME) misslyckades, växlar till $FALLBACK_MODEL_NAME", primaryErr)
+                    executeWithAppCheckRetry {
+                        spokenMealModelFallback.generateContent(promptContent)
+                    }
+                }
+
+                val rawText = response.text ?: throw IllegalStateException("Tomt svar från röstanalysen.")
+                val parsed = parseVisionResponseJson(rawText, mealHint = cleanText)
+                if (parsed.items.isEmpty()) {
+                    Result.failure(IllegalStateException("Kunde inte identifiera några livsmedel i \"$cleanText\". Försök säga tydligare vad och ungefär hur mycket du åt."))
+                } else {
+                    Result.success(
+                        parsed.copy(
+                            reasoning = "Röstloggning tolkad med AI: \"${cleanText}\". ${parsed.reasoning}"
+                        )
+                    )
+                }
+            }
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "[Voice Meal AI] Timeout ($PRIMARY_MODEL_NAME -> $FALLBACK_MODEL_NAME)", e)
+            Result.failure(toFriendlyCloudException(e, "Röstloggning"))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "[Voice Meal AI] Både $PRIMARY_MODEL_NAME och $FALLBACK_MODEL_NAME misslyckades", e)
+            Result.failure(toFriendlyCloudException(e, "Röstloggning"))
+        }
+    }
+
+    /**
+     * Reads a photographed nutrition facts table on the back of food packaging using Gemini Vision
+     * and creates a ready-to-log [SwedishFoodEntry] with exact per-100g/100ml nutrition values.
+     */
+    suspend fun analyzeNutritionLabelImage(
+        bitmap: Bitmap,
+        barcodeHint: String? = null
+    ): Result<SwedishFoodEntry> {
+        if (!isFirebaseReady()) {
+            return Result.failure(IllegalStateException("Firebase är inte redo. Kontrollera internetanslutningen och försök igen."))
+        }
+
+        val scaled = scaleBitmapForAi(bitmap, 1024)
+        return try {
+            withTimeout(50_000L) {
+                val promptText = buildString {
+                    append("Läs av näringsdeklarationen (näringstabellen per 100 g eller 100 ml) på denna bild med högsta precision.")
+                    if (!barcodeHint.isNullOrBlank()) {
+                        append(" Produkten har streckkod EAN $barcodeHint.")
+                    }
+                    append(" Svara ENDAST med giltig JSON enligt schemat.")
+                }
+
+                val promptContent = content {
+                    image(scaled)
+                    text(promptText)
+                }
+
+                val response = try {
+                    executeWithAppCheckRetry {
+                        nutritionLabelModel.generateContent(promptContent)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (primaryErr: Exception) {
+                    Log.w(TAG, "[Nutrition Label OCR] Primär modell ($PRIMARY_MODEL_NAME) misslyckades, växlar till $FALLBACK_MODEL_NAME", primaryErr)
+                    executeWithAppCheckRetry {
+                        nutritionLabelModelFallback.generateContent(promptContent)
+                    }
+                }
+
+                val rawText = response.text ?: throw IllegalStateException("Tomt svar från näringstabellsläsaren.")
+                val cleanJson = rawText.trim()
+                    .removePrefix("```json")
+                    .removePrefix("```")
+                    .removeSuffix("```")
+                    .trim()
+                val json = JSONObject(cleanJson)
+
+                val status = json.optString("table_status", "FOUND").uppercase()
+                val kcal = json.optInt("calories_per_100", 0).coerceIn(0, 1200)
+                val protein = Math.round(json.optDouble("protein_per_100", 0.0).coerceAtLeast(0.0) * 10.0) / 10.0
+                val carbs = Math.round(json.optDouble("carbs_per_100", 0.0).coerceAtLeast(0.0) * 10.0) / 10.0
+                val fat = Math.round(json.optDouble("fat_per_100", 0.0).coerceAtLeast(0.0) * 10.0) / 10.0
+
+                if (status == "NOT_FOUND" || (kcal == 0 && protein == 0.0 && carbs == 0.0 && fat == 0.0)) {
+                    return@withTimeout Result.failure(
+                        IllegalStateException("Ingen tydlig näringstabell kunde läsas av på bilden. Gå närmare näringsvärdestexten i god belysning och försök igen.")
+                    )
+                }
+
+                val basis = json.optString("basis", "100g").lowercase()
+                val isLiquid = basis.contains("ml")
+                val rawName = json.optString("product_name", "").trim()
+                    .ifBlank {
+                        if (!barcodeHint.isNullOrBlank()) "Scannad vara ($barcodeHint)" else "Scannad produkt"
+                    }
+                val rawBrand = json.optString("brand", "").trim()
+                    .takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+                val portionGrams = json.optInt("standard_portion_grams", 100).coerceIn(5, 2000)
+                val portionDesc = json.optString("standard_portion_description", "")
+                    .trim()
+                    .ifBlank { if (isLiquid) "1 portion ($portionGrams ml)" else "1 portion ($portionGrams g)" }
+
+                val entry = SwedishFoodEntry(
+                    id = if (!barcodeHint.isNullOrBlank()) "barcode_$barcodeHint" else "label_${UUID.randomUUID()}",
+                    name = rawName,
+                    brand = rawBrand,
+                    category = if (isLiquid) "Näringsdeklaration (per 100 ml)" else "Näringsdeklaration (per 100 g)",
+                    itemType = if (isLiquid) FoodEntryType.DRINK else FoodEntryType.SUPERMARKET,
+                    caloriesPer100g = kcal,
+                    proteinPer100g = protein,
+                    carbsPer100g = carbs,
+                    fatPer100g = fat,
+                    fiberPer100g = Math.round(json.optDouble("fiber_per_100", 0.0).coerceAtLeast(0.0) * 10.0) / 10.0,
+                    sugarPer100g = Math.round(json.optDouble("sugar_per_100", 0.0).coerceAtLeast(0.0) * 10.0) / 10.0,
+                    saltPer100g = Math.round(json.optDouble("salt_per_100", 0.0).coerceAtLeast(0.0) * 100.0) / 100.0,
+                    standardPortionGrams = portionGrams,
+                    standardPortionDescription = portionDesc,
+                    barcode = barcodeHint?.takeIf { it.isNotBlank() }
+                )
+                Result.success(entry)
+            }
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "[Nutrition Label OCR] Timeout ($PRIMARY_MODEL_NAME -> $FALLBACK_MODEL_NAME)", e)
+            Result.failure(toFriendlyCloudException(e, "Näringstabellsskanning"))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "[Nutrition Label OCR] Både $PRIMARY_MODEL_NAME och $FALLBACK_MODEL_NAME misslyckades", e)
+            Result.failure(toFriendlyCloudException(e, "Näringstabellsskanning"))
         }
     }
 }
