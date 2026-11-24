@@ -512,6 +512,8 @@ private fun WeightProgressLineChart(
     onPointSelected: (Int?) -> Unit
 ) {
     val points = remember(logs) { logs.sortedBy { it.date } }
+    if (points.isEmpty()) return
+
     val weights = remember(points) { points.map { it.weightKg } }
     val minWeight = remember(weights) { (weights.minOrNull() ?: 70.0) - 1.5 }
     val maxWeight = remember(weights) { (weights.maxOrNull() ?: 80.0) + 1.5 }

@@ -1650,7 +1650,7 @@ private fun LazyListScope.customFoodEntryItems(
         Button(
             onClick = {
                 if (customName.isNotBlank()) {
-                    val kcal = customKcal.toIntOrNull() ?: 0
+                    val kcal = customKcal.replace(',', '.').toDoubleOrNull()?.let { kotlin.math.round(it).toInt() } ?: customKcal.toIntOrNull() ?: 0
                     val p = customProtein.replace(',', '.').toDoubleOrNull() ?: 0.0
                     val c = customCarbs.replace(',', '.').toDoubleOrNull() ?: 0.0
                     val f = customFat.replace(',', '.').toDoubleOrNull() ?: 0.0
