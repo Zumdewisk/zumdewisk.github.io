@@ -163,6 +163,8 @@ dependencies {
   "ksp"(libs.moshi.kotlin.codegen)
 }
 
+
+
 tasks.withType<JavaCompile>().configureEach {
   options.encoding = "UTF-8"
 }
