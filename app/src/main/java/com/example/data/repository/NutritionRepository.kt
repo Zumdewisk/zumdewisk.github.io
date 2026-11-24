@@ -10,14 +10,18 @@ import com.example.data.model.UserProfile
 import com.example.data.model.WaterLog
 import com.example.data.model.WorkoutLog
 import com.google.firebase.Firebase
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.snapshots
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.emitAll
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 import java.util.UUID
@@ -35,6 +39,15 @@ class NutritionRepository(private val db: FirebaseFirestore) {
 
     private val auth = Firebase.auth
 
+    private fun currentUidFlow(): Flow<String> = callbackFlow {
+        val listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
+            trySend(firebaseAuth.currentUser?.uid ?: "unauthenticated")
+        }
+        auth.addAuthStateListener(listener)
+        trySend(auth.currentUser?.uid ?: "unauthenticated")
+        awaitClose { auth.removeAuthStateListener(listener) }
+    }.distinctUntilChanged()
+
     private fun requireUserId(): String {
         return auth.currentUser?.uid
             ?: throw IllegalStateException("Användaren måste vara inloggad.")
@@ -42,23 +55,20 @@ class NutritionRepository(private val db: FirebaseFirestore) {
 
     // --- User Profile ---
 
-    fun observeUserProfile(): Flow<UserProfile?> = flow {
-        val uid = auth.currentUser?.uid ?: "unauthenticated"
-        emitAll(
-            db.collection("users").document(uid)
-                .snapshots()
-                .map { snapshot ->
-                    if (snapshot.exists()) {
-                        snapshot.toObject(UserProfile::class.java)?.copy(id = snapshot.id)
-                    } else {
-                        null
-                    }
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun observeUserProfile(): Flow<UserProfile?> = currentUidFlow().flatMapLatest { uid ->
+        db.collection("users").document(uid)
+            .snapshots()
+            .map { snapshot ->
+                if (snapshot.exists()) {
+                    snapshot.toObject(UserProfile::class.java)?.copy(id = snapshot.id)
+                } else {
+                    null
                 }
-                .catch { e ->
-                    Log.e(TAG, "Error observing user profile", e)
-                    throw e
-                }
-        )
+            }
+    }.catch { e ->
+        Log.e(TAG, "Error observing user profile", e)
+        throw e
     }
 
     suspend fun getUserProfile(): Result<UserProfile?> {
@@ -104,39 +114,33 @@ class NutritionRepository(private val db: FirebaseFirestore) {
 
     // --- Meals ---
 
-    fun observeMealsForDate(date: String): Flow<List<MealItem>> = flow {
-        val uid = auth.currentUser?.uid ?: "unauthenticated"
-        emitAll(
-            db.collection("users").document(uid).collection("meals")
-                .whereEqualTo("date", date)
-                .snapshots()
-                .map { snapshot ->
-                    snapshot.documents.mapNotNull { doc ->
-                        doc.toObject(MealItem::class.java)?.copy(id = doc.id, mealId = doc.id)
-                    }.sortedByDescending { it.createdAt?.toDate() }
-                }
-                .catch { e ->
-                    Log.e(TAG, "Error observing meals for date $date", e)
-                    throw e
-                }
-        )
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun observeMealsForDate(date: String): Flow<List<MealItem>> = currentUidFlow().flatMapLatest { uid ->
+        db.collection("users").document(uid).collection("meals")
+            .whereEqualTo("date", date)
+            .snapshots()
+            .map { snapshot ->
+                snapshot.documents.mapNotNull { doc ->
+                    doc.toObject(MealItem::class.java)?.copy(id = doc.id, mealId = doc.id)
+                }.sortedByDescending { it.createdAt?.toDate() }
+            }
+    }.catch { e ->
+        Log.e(TAG, "Error observing meals for date $date", e)
+        throw e
     }
 
-    fun observeAllMeals(): Flow<List<MealItem>> = flow {
-        val uid = auth.currentUser?.uid ?: "unauthenticated"
-        emitAll(
-            db.collection("users").document(uid).collection("meals")
-                .snapshots()
-                .map { snapshot ->
-                    snapshot.documents.mapNotNull { doc ->
-                        doc.toObject(MealItem::class.java)?.copy(id = doc.id, mealId = doc.id)
-                    }.sortedByDescending { it.date }
-                }
-                .catch { e ->
-                    Log.e(TAG, "Error observing all meals", e)
-                    throw e
-                }
-        )
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun observeAllMeals(): Flow<List<MealItem>> = currentUidFlow().flatMapLatest { uid ->
+        db.collection("users").document(uid).collection("meals")
+            .snapshots()
+            .map { snapshot ->
+                snapshot.documents.mapNotNull { doc ->
+                    doc.toObject(MealItem::class.java)?.copy(id = doc.id, mealId = doc.id)
+                }.sortedByDescending { it.date }
+            }
+    }.catch { e ->
+        Log.e(TAG, "Error observing all meals", e)
+        throw e
     }
 
     suspend fun addMeal(meal: MealItem): Result<String> {
@@ -209,22 +213,19 @@ class NutritionRepository(private val db: FirebaseFirestore) {
 
     // --- Water Logs ---
 
-    fun observeWaterLogsForDate(date: String): Flow<List<WaterLog>> = flow {
-        val uid = auth.currentUser?.uid ?: "unauthenticated"
-        emitAll(
-            db.collection("users").document(uid).collection("water_logs")
-                .whereEqualTo("date", date)
-                .snapshots()
-                .map { snapshot ->
-                    snapshot.documents.mapNotNull { doc ->
-                        doc.toObject(WaterLog::class.java)?.copy(id = doc.id, logId = doc.id)
-                    }
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun observeWaterLogsForDate(date: String): Flow<List<WaterLog>> = currentUidFlow().flatMapLatest { uid ->
+        db.collection("users").document(uid).collection("water_logs")
+            .whereEqualTo("date", date)
+            .snapshots()
+            .map { snapshot ->
+                snapshot.documents.mapNotNull { doc ->
+                    doc.toObject(WaterLog::class.java)?.copy(id = doc.id, logId = doc.id)
                 }
-                .catch { e ->
-                    Log.e(TAG, "Error observing water logs", e)
-                    throw e
-                }
-        )
+            }
+    }.catch { e ->
+        Log.e(TAG, "Error observing water logs", e)
+        throw e
     }
 
     suspend fun logWater(amountMl: Int, date: String): Result<Unit> {
@@ -264,21 +265,18 @@ class NutritionRepository(private val db: FirebaseFirestore) {
 
     // --- Weight Logs ---
 
-    fun observeWeightLogs(): Flow<List<com.example.data.model.WeightLog>> = flow {
-        val uid = auth.currentUser?.uid ?: "unauthenticated"
-        emitAll(
-            db.collection("users").document(uid).collection("weight_logs")
-                .snapshots()
-                .map { snapshot ->
-                    snapshot.documents.mapNotNull { doc ->
-                        doc.toObject(com.example.data.model.WeightLog::class.java)?.copy(id = doc.id, logId = doc.id)
-                    }.sortedBy { it.date }
-                }
-                .catch { e ->
-                    Log.e(TAG, "Error observing weight logs", e)
-                    throw e
-                }
-        )
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun observeWeightLogs(): Flow<List<com.example.data.model.WeightLog>> = currentUidFlow().flatMapLatest { uid ->
+        db.collection("users").document(uid).collection("weight_logs")
+            .snapshots()
+            .map { snapshot ->
+                snapshot.documents.mapNotNull { doc ->
+                    doc.toObject(com.example.data.model.WeightLog::class.java)?.copy(id = doc.id, logId = doc.id)
+                }.sortedBy { it.date }
+            }
+    }.catch { e ->
+        Log.e(TAG, "Error observing weight logs", e)
+        throw e
     }
 
     suspend fun logWeight(weightKg: Double, date: String, note: String = ""): Result<String> {
@@ -349,39 +347,33 @@ class NutritionRepository(private val db: FirebaseFirestore) {
 
     // --- Workout Logs ---
 
-    fun observeWorkoutLogsForDate(date: String): Flow<List<WorkoutLog>> = flow {
-        val uid = auth.currentUser?.uid ?: "unauthenticated"
-        emitAll(
-            db.collection("users").document(uid).collection("workout_logs")
-                .whereEqualTo("date", date)
-                .snapshots()
-                .map { snapshot ->
-                    snapshot.documents.mapNotNull { doc ->
-                        doc.toObject(WorkoutLog::class.java)?.copy(id = doc.id, logId = doc.id)
-                    }.sortedByDescending { it.createdAt?.toDate() }
-                }
-                .catch { e ->
-                    Log.e(TAG, "Error observing workout logs for date $date", e)
-                    throw e
-                }
-        )
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun observeWorkoutLogsForDate(date: String): Flow<List<WorkoutLog>> = currentUidFlow().flatMapLatest { uid ->
+        db.collection("users").document(uid).collection("workout_logs")
+            .whereEqualTo("date", date)
+            .snapshots()
+            .map { snapshot ->
+                snapshot.documents.mapNotNull { doc ->
+                    doc.toObject(WorkoutLog::class.java)?.copy(id = doc.id, logId = doc.id)
+                }.sortedByDescending { it.createdAt?.toDate() }
+            }
+    }.catch { e ->
+        Log.e(TAG, "Error observing workout logs for date $date", e)
+        throw e
     }
 
-    fun observeAllWorkoutLogs(): Flow<List<WorkoutLog>> = flow {
-        val uid = auth.currentUser?.uid ?: "unauthenticated"
-        emitAll(
-            db.collection("users").document(uid).collection("workout_logs")
-                .snapshots()
-                .map { snapshot ->
-                    snapshot.documents.mapNotNull { doc ->
-                        doc.toObject(WorkoutLog::class.java)?.copy(id = doc.id, logId = doc.id)
-                    }.sortedByDescending { it.date }
-                }
-                .catch { e ->
-                    Log.e(TAG, "Error observing all workout logs", e)
-                    throw e
-                }
-        )
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun observeAllWorkoutLogs(): Flow<List<WorkoutLog>> = currentUidFlow().flatMapLatest { uid ->
+        db.collection("users").document(uid).collection("workout_logs")
+            .snapshots()
+            .map { snapshot ->
+                snapshot.documents.mapNotNull { doc ->
+                    doc.toObject(WorkoutLog::class.java)?.copy(id = doc.id, logId = doc.id)
+                }.sortedByDescending { it.date }
+            }
+    }.catch { e ->
+        Log.e(TAG, "Error observing all workout logs", e)
+        throw e
     }
 
     suspend fun addWorkoutLog(workout: WorkoutLog): Result<String> {
@@ -419,21 +411,18 @@ class NutritionRepository(private val db: FirebaseFirestore) {
 
     // --- Recipes ---
 
-    fun observeRecipes(): Flow<List<Recipe>> = flow {
-        val uid = auth.currentUser?.uid ?: "unauthenticated"
-        emitAll(
-            db.collection("users").document(uid).collection("recipes")
-                .snapshots()
-                .map { snapshot ->
-                    snapshot.documents.mapNotNull { doc ->
-                        doc.toObject(Recipe::class.java)?.copy(id = doc.id, recipeId = doc.id)
-                    }.sortedByDescending { it.updatedAt?.toDate() ?: it.createdAt?.toDate() }
-                }
-                .catch { e ->
-                    Log.e(TAG, "Error observing recipes", e)
-                    throw e
-                }
-        )
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun observeRecipes(): Flow<List<Recipe>> = currentUidFlow().flatMapLatest { uid ->
+        db.collection("users").document(uid).collection("recipes")
+            .snapshots()
+            .map { snapshot ->
+                snapshot.documents.mapNotNull { doc ->
+                    doc.toObject(Recipe::class.java)?.copy(id = doc.id, recipeId = doc.id)
+                }.sortedByDescending { it.updatedAt?.toDate() ?: it.createdAt?.toDate() }
+            }
+    }.catch { e ->
+        Log.e(TAG, "Error observing recipes", e)
+        throw e
     }
 
     suspend fun saveRecipe(recipe: Recipe): Result<String> {
@@ -502,21 +491,18 @@ class NutritionRepository(private val db: FirebaseFirestore) {
 
     // --- AI Corrections & Personal Learning Memory ---
 
-    fun observeAiCorrections(): Flow<List<AiFoodCorrection>> = flow {
-        val uid = auth.currentUser?.uid ?: "unauthenticated"
-        emitAll(
-            db.collection("users").document(uid).collection("ai_corrections")
-                .snapshots()
-                .map { snapshot ->
-                    snapshot.documents.mapNotNull { doc ->
-                        doc.toObject(AiFoodCorrection::class.java)?.copy(id = doc.id, correctionId = doc.id)
-                    }.sortedByDescending { it.createdAt?.toDate() }
-                }
-                .catch { e ->
-                    Log.e(TAG, "Error observing AI corrections", e)
-                    throw e
-                }
-        )
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun observeAiCorrections(): Flow<List<AiFoodCorrection>> = currentUidFlow().flatMapLatest { uid ->
+        db.collection("users").document(uid).collection("ai_corrections")
+            .snapshots()
+            .map { snapshot ->
+                snapshot.documents.mapNotNull { doc ->
+                    doc.toObject(AiFoodCorrection::class.java)?.copy(id = doc.id, correctionId = doc.id)
+                }.sortedByDescending { it.createdAt?.toDate() }
+            }
+    }.catch { e ->
+        Log.e(TAG, "Error observing AI corrections", e)
+        throw e
     }
 
     suspend fun saveAiCorrection(correction: AiFoodCorrection): Result<String> {

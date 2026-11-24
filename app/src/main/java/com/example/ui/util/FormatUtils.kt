@@ -20,7 +20,8 @@ fun formatMacroDecimal(value: Double): String {
     } else {
         val whole = roundedTenths / 10
         val tenth = kotlin.math.abs(roundedTenths % 10)
-        "$whole,$tenth"
+        val sign = if (value < 0 && whole == 0) "-" else ""
+        "$sign$whole,$tenth"
     }
 }
 

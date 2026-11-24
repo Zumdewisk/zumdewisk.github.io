@@ -35,8 +35,14 @@ class StorageRepository(private val context: Context? = null) {
         }
 
         val outputStream = ByteArrayOutputStream()
-        scaledBitmap.compress(Bitmap.CompressFormat.JPEG, quality, outputStream)
-        return outputStream.toByteArray()
+        try {
+            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, quality, outputStream)
+            return outputStream.toByteArray()
+        } finally {
+            if (scaledBitmap != bitmap && !scaledBitmap.isRecycled) {
+                scaledBitmap.recycle()
+            }
+        }
     }
 
     /**

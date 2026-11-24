@@ -705,7 +705,7 @@ fun FoodDiaryScreen(
             }
         }
 
-        val fallbackFactor = (customPercentText.toDoubleOrNull()?.coerceIn(10.0, 1000.0) ?: (selectedMultiplier * 100.0)) / 100.0
+        val fallbackFactor = (customPercentText.replace(',', '.').toDoubleOrNull()?.coerceIn(10.0, 1000.0) ?: (selectedMultiplier * 100.0)) / 100.0
 
         val previewCalories = if (baseIngredients.isNotEmpty()) {
             updatedIngredients.sumOf { it.calories }

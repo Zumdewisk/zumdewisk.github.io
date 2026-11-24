@@ -101,13 +101,13 @@ object AdManager {
 
     /**
      * Anropas vid flikbyte i appen.
-     * Visar en helskärmsannons (interstitial) vid var 3:e flikbyte (med minst 60 sekunders intervall).
+     * Visar en helskärmsannons (interstitial) vid var 3:e flikbyte (med minst 25 sekunders intervall).
      */
     fun onTabSwitched(activity: Activity) {
         tabSwitchCount++
         val now = System.currentTimeMillis()
         Log.d(TAG, "Flikbyte #$tabSwitchCount registrerat.")
-        if (tabSwitchCount % 3 == 0 && now - lastAdShownAt > 60_000) {
+        if (tabSwitchCount % 3 == 0 && now - lastAdShownAt > 25_000) {
             interstitialAd?.let { ad ->
                 Log.d(TAG, "Visar interstitial-annons vid flikbyte #$tabSwitchCount.")
                 ad.show(activity)
