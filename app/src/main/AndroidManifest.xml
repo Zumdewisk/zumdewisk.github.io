@@ -11,6 +11,10 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Inaktivera Privacy Sandbox AdServices som ger onNullBinding MEASUREMENT_SERVICE på enheter utan AdServices -->
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_AD_ID" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_ATTRIBUTION" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_TOPICS" tools:node="remove" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <!-- Google Health Connect permissions (steg, aktiva kalorier och träningspass) -->
@@ -42,10 +46,19 @@
         android:largeHeap="true"
         android:hardwareAccelerated="true"
         android:theme="@style/Theme.MyApplication">
-        <!-- Google Mobile Ads App ID -->
+        <!-- Google Mobile Ads App ID & optimeringsflaggor -->
         <meta-data
             android:name="com.google.android.gms.ads.APPLICATION_ID"
             android:value="ca-app-pub-6390888557865245~8665088842" />
+        <meta-data
+            android:name="com.google.android.gms.ads.flag.OPTIMIZE_INITIALIZATION"
+            android:value="true" />
+        <meta-data
+            android:name="com.google.android.gms.ads.flag.OPTIMIZE_AD_LOADING"
+            android:value="true" />
+        <property
+            android:name="android.adservices.AD_SERVICES_CONFIG"
+            tools:node="remove" />
 
         <activity
             android:name=".MainActivity"
