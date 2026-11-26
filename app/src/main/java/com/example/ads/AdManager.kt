@@ -18,8 +18,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 object AdManager {
     private const val TAG = "AdManager"
 
-    // Riktigt AdMob Interstitial Ad Unit ID
+    // Riktigt AdMob Interstitial Ad Unit ID (Interstitial_Flikbyte)
     private const val INTERSTITIAL_ID = "ca-app-pub-6390888557865245/5142058064"
+    private const val INTERSTITIAL_COOLDOWN_MS = 15_000L
 
     private var interstitialAd: InterstitialAd? = null
     private val adsInitialized = AtomicBoolean(false)
@@ -101,13 +102,13 @@ object AdManager {
 
     /**
      * Anropas vid flikbyte i appen.
-     * Visar en helskärmsannons (interstitial) vid var 3:e flikbyte (med minst 25 sekunders intervall).
+     * Visar en helskärmsannons (interstitial) vid var 3:e flikbyte (med minst 15 sekunders cooldown).
      */
     fun onTabSwitched(activity: Activity) {
         tabSwitchCount++
         val now = System.currentTimeMillis()
         Log.d(TAG, "Flikbyte #$tabSwitchCount registrerat.")
-        if (tabSwitchCount % 3 == 0 && now - lastAdShownAt > 25_000) {
+        if (tabSwitchCount % 3 == 0 && now - lastAdShownAt >= INTERSTITIAL_COOLDOWN_MS) {
             interstitialAd?.let { ad ->
                 Log.d(TAG, "Visar interstitial-annons vid flikbyte #$tabSwitchCount.")
                 ad.show(activity)
